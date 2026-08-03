@@ -1,0 +1,65 @@
+name: Bug report
+description: Something behaves differently from what the documentation or the code says it should.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not report security vulnerabilities here. See [SECURITY.md](https://github.com/koval-finance/koval-engine/blob/main/SECURITY.md) for private reporting.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What did you observe? Paste the full error or the incorrect output.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: How to reproduce
+      description: The exact CLI command or Python snippet, plus the strategy graph JSON if one is involved. A reproduction that runs against the bundled example data is ideal.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected instead
+    validations:
+      required: true
+
+  - type: input
+    id: engine-version
+    attributes:
+      label: koval-engine version
+      description: Output of `koval --version`.
+      placeholder: "0.9.0"
+    validations:
+      required: true
+
+  - type: input
+    id: adapter-version
+    attributes:
+      label: Backtest engine package and version
+      description: e.g. package-name 1.2.3, or "none" if the problem does not involve a backtest.
+    validations:
+      required: false
+
+  - type: input
+    id: python-version
+    attributes:
+      label: Python version
+      placeholder: "3.12.4"
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: "macOS 15.2 / Ubuntu 24.04"
+    validations:
+      required: true

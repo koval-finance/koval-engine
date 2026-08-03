@@ -1,0 +1,69 @@
+"""Accuracy guards for documentation published with the distribution."""
+
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+README = ROOT / "README.md"
+CONTRIBUTING = ROOT / "CONTRIBUTING.md"
+CHANGELOG = ROOT / "CHANGELOG.md"
+
+
+def test_readme_does_not_make_unscoped_execution_model_claims():
+    readme = README.read_text(encoding="utf-8")
+    misleading = (
+        "Execution modelling is fees-only",
+        "no partial fills",
+        "`exchange_type` is fixed to `future`",
+        "There is no slippage model",
+    )
+
+    assert [claim for claim in misleading if claim in readme] == []
+    assert "**Paper simulation.**" in readme
+    assert "**Backtest plugins.**" in readme
+    assert "**Sandbox execution.**" in readme
+    assert "market entries only" in readme
+    assert "partial fill triggers containment" in readme
+
+
+def test_readme_links_are_absolute_for_the_pypi_description():
+    readme = README.read_text(encoding="utf-8")
+    link_targets = re.findall(r"(?<!!)\[[^\]]+\]\(([^)]+)\)", readme)
+    relative = [target for target in link_targets if not target.startswith(("https://", "http://"))]
+
+    assert relative == []
+
+
+def test_contributing_says_the_documented_command_excludes_plugin_tests():
+    contributing = CONTRIBUTING.read_text(encoding="utf-8")
+
+    assert "deselected by default" not in contributing
+    assert "The documented test command and CI exclude them" in contributing
+
+
+def test_changelog_scopes_long_lived_credential_claim_to_pypi():
+    changelog = CHANGELOG.read_text(encoding="utf-8")
+
+    assert "No long-lived credentials exist in CI" not in changelog
+    assert "No long-lived PyPI credential is used" in changelog
+
+
+def test_public_docstrings_do_not_claim_legacy_validation_is_unchanged():
+    paths = (
+        ROOT / "src" / "koval" / "strategy" / "block_assembler.py",
+        ROOT / "tests" / "strategy" / "test_block_assembler.py",
+    )
+    text = "\n".join(path.read_text(encoding="utf-8") for path in paths)
+
+    assert "behaviour is unchanged" not in text
+    assert "behaviour is preserved" not in text
+    assert "validation is stricter" in text
+
+
+def test_security_policy_names_the_actual_module_level_origin_allowlist():
+    security = (ROOT / "SECURITY.md").read_text(encoding="utf-8")
+
+    assert "BinanceSandboxBroker._ALLOWED_BASE_URLS" not in security
+    assert "koval.exchanges.binance_sandbox._ALLOWED_BASE_URLS" in security

@@ -1,0 +1,42 @@
+name: Feature request
+description: Suggest a capability the engine does not have.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please open an issue before writing a large patch, so effort is not spent on an approach that will not be merged.
+
+        Note that real-money trading is permanently out of scope: the engine is built so that no code path reaches a real-money endpoint, and requests to add one will be closed.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you trying to do that the engine makes difficult or impossible? Describe the situation, not the solution.
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: What you think should change. If it affects a public contract — a block's parameters, an entity on a graph edge, the engine protocol — say so explicitly.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: What you tried, or why an existing block or a custom backtest engine plugin does not solve it.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: dependencies
+    attributes:
+      label: Dependencies
+      options:
+        - label: This would not require a new runtime dependency, or I have explained below why one is unavoidable.
+          required: false

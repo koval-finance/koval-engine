@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: python -m pip install -e ".[dev]"
+      # verify.sh runs ruff, the format check, and the default suite — the
+      # same gates as the release workflow, pinned to it by
+      # tests/test_agents_docs.py. The licence-boundary, public-surface,
+      # public-language, and agent-docs guards are pytest tests and run
+      # inside it.
+      - run: ./scripts/verify.sh
+
+  dco:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require Signed-off-by on every commit
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          missing=$(git log --format='%H %s' --invert-grep --grep='^Signed-off-by: ' "$BASE_SHA..$HEAD_SHA")
+          if [ -n "$missing" ]; then
+            echo "Commits missing a DCO sign-off:"
+            echo "$missing"
+            echo "Fix with: git commit --amend -s   (or git rebase --signoff main)"
+            exit 1
+          fi
+          echo "All commits are signed off."

@@ -1,0 +1,31 @@
+name: Mirror to GitLab
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Push to GitLab
+        env:
+          GITLAB_TOKEN: ${{ secrets.GITLAB_MIRROR_TOKEN }}
+        run: |
+          # The mirror is a convenience, not infrastructure. When the token is
+          # not configured, skip quietly rather than failing every push to main.
+          if [ -z "$GITLAB_TOKEN" ]; then
+            echo "GITLAB_MIRROR_TOKEN is not set; skipping the mirror."
+            exit 0
+          fi
+          git remote add gitlab \
+            "https://oauth2:${GITLAB_TOKEN}@gitlab.com/koval-group/koval-engine.git"
+          git push gitlab refs/remotes/origin/main:refs/heads/main --tags

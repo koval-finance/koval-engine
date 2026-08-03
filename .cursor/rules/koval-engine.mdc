@@ -1,0 +1,9 @@
+---
+description: koval-engine project context — always read AGENTS.md first
+alwaysApply: true
+---
+
+All project context lives in AGENTS.md at the repository root. Read it
+before making changes. The definition of done is `./scripts/verify.sh`
+exiting 0. Hard rules: no real-money code path, no backtrader import, no new
+runtime dependencies, never run git write commands.

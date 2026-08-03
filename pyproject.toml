@@ -1,0 +1,79 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "koval-engine"
+version = "0.9.0"
+description = "Open engine for building and validating trading strategies: backtest, paper, and exchange-sandbox live. No real-money path."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Koval Contributors" }]
+keywords = [
+    "trading",
+    "backtesting",
+    "algorithmic-trading",
+    "paper-trading",
+    "quantitative-finance",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Financial and Insurance Industry",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Office/Business :: Financial :: Investment",
+    "Typing :: Typed",
+]
+dependencies = [
+    "numpy>=1.26",
+    "pandas>=2.2",
+    "pyarrow>=15.0",
+    "portalocker>=2.8",
+    "pydantic>=2.7",
+    "requests>=2.31",
+]
+
+[project.optional-dependencies]
+dev = [
+    "build>=1.2",
+    "pytest>=8.1",
+    "pytest-asyncio>=0.23",
+    "responses>=0.25",
+    "ruff>=0.4",
+    "setuptools>=68",
+    "twine>=5.1",
+    "wheel",
+]
+
+[project.scripts]
+koval = "koval.cli:main"
+
+[project.urls]
+Homepage = "https://koval.finance"
+Source = "https://github.com/koval-finance/koval-engine"
+Issues = "https://github.com/koval-finance/koval-engine/issues"
+Changelog = "https://github.com/koval-finance/koval-engine/blob/main/CHANGELOG.md"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["koval*"]
+
+[tool.setuptools.package-data]
+koval = ["py.typed", "examples/graphs/*.json", "examples/data/*.csv", "examples/data/*.md"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+markers = ["backtrader: requires an independently installed GPL Backtrader adapter"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["E501"]

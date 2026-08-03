@@ -1,0 +1,15 @@
+include .gitignore
+include AGENTS.md
+include CHANGELOG.md
+include CLAUDE.md
+include CODE_OF_CONDUCT.md
+include CONTRIBUTING.md
+include GEMINI.md
+include SECURITY.md
+graft .cursor
+graft .github
+graft agents_docs
+graft examples
+graft scripts
+graft tests
+global-exclude *.py[cod]
