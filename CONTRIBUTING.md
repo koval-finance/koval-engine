@@ -25,7 +25,7 @@ Requires Python 3.11 or newer.
 
 CI runs exactly these on Python 3.11, 3.12, and 3.13.
 
-Tests marked `backtrader` need the GPL adapter package, which this repository does not depend on. The documented test command and CI exclude them. **Do not install `backtrader` into this repository's virtualenv** — the engine's environment must stay free of the GPL dependency.
+Tests marked `backtrader` need the GPL adapter package — [`koval-backtrader`](https://github.com/koval-finance/koval-backtrader) — which this repository does not depend on. The documented test command and CI exclude them. **Do not install `backtrader` or `koval-backtrader` into this repository's virtualenv** — the engine's environment must stay free of the GPL dependency. To run those tests, create a throwaway virtualenv, install `koval-backtrader` there, and run `pytest -m backtrader -q` from it.
 
 ## Tests come first
 

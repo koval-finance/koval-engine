@@ -6,10 +6,11 @@ failure costs someone real time; delete entries that stop being true.
 ## 2026-08-03 — "deselected" tests in every run
 
 **Symptom:** pytest reports deselected tests no matter what you do.
-**Cause:** tests marked `backtrader` need a separately distributed GPL
-plugin.
+**Cause:** tests marked `backtrader` need `koval-backtrader`, a separately
+distributed GPL plugin.
 **Fix:** nothing — the default command excludes them on purpose. Never
-install that plugin here; see [testing.md](testing.md).
+install that plugin into this repository's virtualenv; to run those tests,
+use the throwaway environment described in [testing.md](testing.md).
 
 ## 2026-08-03 — a guard test fails and the fix is not obvious
 

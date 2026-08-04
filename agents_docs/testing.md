@@ -23,10 +23,24 @@ a failure there as a stop-everything signal.
 
 ## The `backtrader` marker
 
-Tests marked `backtrader` exercise a separately distributed GPL plugin. The
-default command deselects them, CI never runs them here, and the plugin must
-never be installed into this repository's virtualenv — that would cross the
-licence boundary this project exists to keep.
+Tests marked `backtrader` exercise a separately distributed GPL plugin —
+`koval-backtrader` on PyPI. The default command deselects them, CI never runs
+them here, and the plugin must never be installed into this repository's
+virtualenv: that would put a GPL package in the environment of an MIT project
+and cross the boundary this split exists to keep.
+
+To run them anyway, use a throwaway environment that is not this one:
+
+```bash
+python3 -m venv /tmp/koval-plugin-check
+/tmp/koval-plugin-check/bin/pip install -e ".[dev]" koval-backtrader
+/tmp/koval-plugin-check/bin/python -m pytest -m backtrader -q
+rm -rf /tmp/koval-plugin-check
+```
+
+The engine's own `.venv` is untouched by that, which is the point. Never
+shortcut it by copying an adapter directory into `src/` — a grafted tree makes
+the licence-boundary guard fail for a reason, and the failure is correct.
 
 ## What "tested" means
 
