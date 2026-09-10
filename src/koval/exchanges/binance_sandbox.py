@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from decimal import ROUND_DOWN, ROUND_UP, Decimal, InvalidOperation
 from typing import Any
@@ -31,6 +32,17 @@ from koval.exchanges.auth import (
 
 _TESTNET_URL = "https://testnet.binancefuture.com"
 _ALLOWED_BASE_URLS = {_TESTNET_URL}
+_SUPPORTED_ENTRY_TYPES = frozenset({"market", "limit", "stop"})
+_SIGNED_RECV_WINDOW_MS = 5_000
+_MAX_CLOCK_SKEW_MS = 60_000
+
+
+class ClockSkewExceeded(RuntimeError):
+    """The host clock is too far from venue time to sign a request safely."""
+
+
+def _clock_ms() -> int:
+    return int(time.time() * 1000)
 
 
 @dataclass
@@ -52,6 +64,7 @@ class BinanceSandboxBroker:
         base_url: str = _TESTNET_URL,
         session: requests.Session | None = None,
         timeout: float = 10.0,
+        clock_ms: Callable[[], int] = _clock_ms,
     ) -> None:
         if base_url.rstrip("/") not in _ALLOWED_BASE_URLS:
             raise ValueError("Binance sandbox broker only accepts allowlisted futures testnet URLs")
@@ -67,11 +80,16 @@ class BinanceSandboxBroker:
             raise ValueError("Binance sandbox timeout must be positive and finite") from exc
         if not math.isfinite(parsed_timeout) or parsed_timeout <= 0:
             raise ValueError("Binance sandbox timeout must be positive and finite")
+        if not callable(clock_ms):
+            raise ValueError("Binance sandbox clock_ms must be callable")
         self.base_url = base_url.rstrip("/")
         self._api_key = api_key
         self._api_secret = api_secret
         self._session = session or requests.Session()
         self._timeout = parsed_timeout
+        self._clock_ms = clock_ms
+        self._clock_skew_ms = 0
+        self._clock_synced_at_ms: int | None = None
         self._tracked_orders: dict[str, _TrackedOrder] = {}
         self._cumulative_fills: dict[str, Decimal] = {}
         self._queued_fills: list[BrokerFill] = []
@@ -88,6 +106,80 @@ class BinanceSandboxBroker:
     @property
     def position(self) -> BrokerPositionSnapshot | None:
         return self._position
+
+    @property
+    def margin_used(self) -> float:
+        """Initial margin the venue holds against the open position.
+
+        Derived from the leverage and notional reported by
+        ``/fapi/v2/positionRisk``. It is ``0.0`` until that data has been
+        synced (``submit_entry`` refreshes it right after an entry fills, and
+        ``reconcile`` on every cycle)."""
+        position = self._position
+        if position is None:
+            return 0.0
+        meta = position.metadata
+        try:
+            leverage = float(meta.get("leverage") or 0.0)  # type: ignore[union-attr]
+        except (TypeError, ValueError):
+            return 0.0
+        if leverage <= 0:
+            return 0.0
+        notional = meta.get("notional")  # type: ignore[union-attr]
+        try:
+            notional_value = abs(float(notional)) if notional is not None else 0.0
+        except (TypeError, ValueError):
+            notional_value = 0.0
+        if notional_value == 0.0:
+            qty = _decimal_or_zero(position.quantity)
+            price = _decimal_or_zero(position.entry_price)
+            notional_value = float(abs(qty * price))
+        return notional_value / leverage if notional_value > 0 else 0.0
+
+    @property
+    def clock_skew_ms(self) -> int:
+        return self._clock_skew_ms
+
+    def synchronize_clock(self) -> int:
+        """Measure testnet clock skew using the request midpoint."""
+        started_ms = int(self._clock_ms())
+        response = self._request("GET", f"{self.base_url}/fapi/v1/time")
+        response.raise_for_status()
+        finished_ms = int(self._clock_ms())
+        payload = response.json()
+        try:
+            server_ms = int(payload["serverTime"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise RuntimeError("Binance sandbox server time response is invalid") from exc
+        midpoint_ms = started_ms + (finished_ms - started_ms) // 2
+        skew_ms = server_ms - midpoint_ms
+        if abs(skew_ms) > _MAX_CLOCK_SKEW_MS:
+            raise ClockSkewExceeded("clock_skew_exceeded")
+        self._clock_skew_ms = skew_ms
+        self._clock_synced_at_ms = finished_ms
+        return skew_ms
+
+    def _refresh_position_margin(self, symbol: str) -> None:
+        """Pull leverage/notional for the just-opened position so
+        ``margin_used`` is real for the position's whole life rather than zero
+        until the next reconcile. A failure here must not un-confirm an entry
+        that already filled."""
+        if self._position is None:
+            return
+        try:
+            positions = self._fetch_positions(symbol)
+        except (requests.RequestException, ValueError, KeyError):
+            return
+        want = self._normalize_symbol(symbol)
+        match = next(
+            (p for p in positions if self._normalize_symbol(p.symbol) == want),
+            None,
+        )
+        if match is not None and self._position is not None:
+            self._position = replace(
+                self._position,
+                metadata={**self._position.metadata, **match.metadata},
+            )
 
     @staticmethod
     def _normalize_symbol(symbol: str) -> str:
@@ -122,6 +214,7 @@ class BinanceSandboxBroker:
                 quantity_precision=item.get("quantityPrecision"),
                 market_quantity_step=market_lot_filter.get("stepSize"),
                 market_min_qty=market_lot_filter.get("minQty"),
+                quote_asset=str(item.get("quoteAsset", "")).upper(),
             )
             self._metadata_by_symbol[normalized] = metadata
             return metadata
@@ -130,14 +223,15 @@ class BinanceSandboxBroker:
     def submit_entry(self, intent: BrokerOrderIntent) -> BrokerOrderAck:
         if intent.target != self.target:
             raise ValueError("entry order target does not match the Binance sandbox")
-        if intent.order_type != "market":
+        if intent.order_type not in _SUPPORTED_ENTRY_TYPES:
             raise ValueError(
-                "Binance sandbox supports market entries only so fills can be protected immediately"
+                "Binance sandbox supports market, limit and stop entries; "
+                "a working entry is protected by the between-bar order watch"
             )
         self._ensure_one_way_mode()
         venue_order_type = _order_type(intent.order_type)
         metadata = self.fetch_metadata(intent.symbol)
-        normalized_intent = _normalize_market_intent(intent, metadata)
+        normalized_intent = _normalize_entry_intent(intent, metadata)
         validation = validate_order_against_metadata(
             replace(normalized_intent, order_type=venue_order_type.lower()),
             metadata,
@@ -181,7 +275,9 @@ class BinanceSandboxBroker:
                 raise RuntimeError(
                     "filled market response omitted a positive quantity or average price"
                 )
+            fill = self._annotate_venue_fees(fill)
             self._apply_fill(fill)
+            self._refresh_position_margin(intent.symbol)
             self._queued_fills.append(fill)
             self._forget_order(intent.client_order_id)
         elif order_ack.status != "accepted":
@@ -365,6 +461,7 @@ class BinanceSandboxBroker:
             self._cumulative_fills[client_order_id] = cumulative
             fill = _fill_from_binance(session_id, payload, tracked, delta)
             if fill is not None:
+                fill = self._annotate_venue_fees(fill)
                 self._apply_fill(fill)
                 fills.append(fill)
             if str(payload.get("status", "")).upper() in {
@@ -376,6 +473,44 @@ class BinanceSandboxBroker:
             }:
                 self._forget_order(client_order_id)
         return fills
+
+    def _annotate_venue_fees(self, fill: BrokerFill) -> BrokerFill:
+        """Attach the venue commission and realized PnL of a completed fill.
+
+        Fees paid in an asset other than the quote asset are recorded but never
+        converted: the run is flagged approximated instead of guessing a rate.
+        """
+        if fill.status != "filled" or fill.exchange_order_id is None:
+            return fill
+        symbol = self._normalize_symbol(fill.symbol)
+        payload = self._signed_request(
+            "GET",
+            "/fapi/v1/userTrades",
+            {"symbol": symbol, "orderId": fill.exchange_order_id},
+        )
+        cached = self._metadata_by_symbol.get(symbol)
+        quote = cached.quote_asset if cached and cached.quote_asset else _quote_asset(symbol)
+        commission_quote = Decimal("0")
+        realized = Decimal("0")
+        unconverted = False
+        for trade in _as_list(payload.get("data", payload)):
+            amount = _decimal_or_zero(trade.get("commission"))
+            if str(trade.get("commissionAsset", "")).upper() == quote:
+                commission_quote += amount
+            elif amount > 0:
+                unconverted = True
+            realized += _decimal_or_zero(trade.get("realizedPnl"))
+        metadata = {
+            **fill.metadata,
+            "commission": str(commission_quote),
+            "commission_asset": quote,
+            "commission_unconverted": unconverted,
+            "venue_realized_pnl": str(realized),
+        }
+        realized_pnl = fill.realized_pnl
+        if fill.role in {"stop", "target", "flatten"}:
+            realized_pnl = str(realized - (Decimal("0") if unconverted else commission_quote))
+        return replace(fill, metadata=metadata, realized_pnl=realized_pnl)
 
     def _track_order(
         self,
@@ -616,7 +751,11 @@ class BinanceSandboxBroker:
         ]
 
     def _signed_request(self, method: str, path: str, params: dict[str, Any]) -> dict[str, Any]:
-        query = {**params, "timestamp": int(time.time() * 1000)}
+        query = {
+            **params,
+            "timestamp": int(self._clock_ms()) + self._clock_skew_ms,
+            "recvWindow": _SIGNED_RECV_WINDOW_MS,
+        }
         encoded = urlencode(query)
         signature = hmac_sha256(self._api_secret, encoded)
         signed_query = f"{encoded}&signature={signature}"
@@ -679,7 +818,7 @@ def _quantize_to_step(value: Decimal, step: Decimal, *, rounding: str) -> Decima
     return (value / step).to_integral_value(rounding=rounding) * step
 
 
-def _normalize_market_intent(
+def _normalize_entry_intent(
     intent: BrokerOrderIntent,
     metadata: VenueSymbolMetadata,
 ) -> BrokerOrderIntent:
@@ -697,7 +836,11 @@ def _normalize_market_intent(
         quantity_step,
         rounding=ROUND_DOWN,
     )
-    normalized_price = _quantize_to_step(price, price_tick, rounding=ROUND_DOWN)
+    # A working entry never crosses further than the strategy asked for: a buy
+    # rounds down to the tick, a sell rounds up.
+    normalized_price = _quantize_to_step(
+        price, price_tick, rounding=ROUND_DOWN if intent.side == "buy" else ROUND_UP
+    )
     normalized_stop = stop_price
     normalized_target = target_price
     if stop_price is not None:
@@ -762,7 +905,18 @@ def _normalize_protective_order(
 
 
 def _order_type(order_type: str) -> str:
-    return "MARKET" if order_type == "market" else order_type.upper()
+    if order_type == "market":
+        return "MARKET"
+    if order_type == "stop":
+        return "STOP_MARKET"
+    return order_type.upper()
+
+
+def _quote_asset(symbol: str) -> str:
+    for quote in ("USDT", "USDC", "BUSD"):
+        if symbol.upper().endswith(quote):
+            return quote
+    return "USDT"
 
 
 def _validate_protective_order(

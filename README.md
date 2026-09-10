@@ -9,7 +9,7 @@ An open engine for building and validating trading strategies as dataflow graphs
 
 ## Status
 
-Beta. This is the `0.9.x` series and the public API may change before 1.0.
+Beta. This is the `0.10.x` series and the public API may change before 1.0.
 
 ## Quick start
 
@@ -60,13 +60,15 @@ Finally, keeping the engine separate from the hosted product keeps the open vers
 
 Read this before trusting a number it prints.
 
-- **Paper simulation.** `PaperBroker` uses deterministic OHLC-bar fills and does not deduct commissions, funding, or borrow costs. A stop crossed by an opening gap fills at the bar open. If one bar reaches both the stop and target, the stop fills first. Order-book depth and queue position are not modelled.
-- **Backtest plugins.** Each plugin owns its fill, fee, slippage, and partial-fill model. Review the selected plugin's documentation before relying on its results.
-- **Sandbox execution.** The built-in Binance USD-M Futures testnet broker accepts market entries only. Every entry requires a full stop-loss/take-profit bracket, and protection is confirmed immediately after a full fill. A partial fill triggers containment instead of being adopted as a running strategy position.
-- **Execution scope.** The CLI and built-in Binance sandbox broker target futures. `resolve_execution_settings` can carry spot fee settings for integrations, but this package does not implement built-in spot order execution.
+- **Paper simulation.** `PaperBroker` ships three versioned profiles. `paper_legacy_v1` (the default) preserves the original cost-free behavior. `paper_ohlcv_fixed_v1` preserves execution contract v1, including next-open market entries and one-bar-delayed protection. `paper_ohlcv_realistic_v2` activates protection on the entry bar, records unresolved same-bar ambiguity, resolves it stop-first, and handles favorable limit gaps at the favorable open without violating the limit after costs. A market fill already beyond its bracket is contained at the same market reference rather than an unreachable stop or target. The broker sizes and reconciles from actual fills through an append-only cash ledger.
+- **Optional execution evidence.** A v2 paper run can receive historical funding, fee schedules, instrument constraints, mark prices, and a lagged impact calibration. Supplied evidence is identified on fills and in resolved metadata; missing evidence is reported as `unavailable`, not silently treated as observed zero. Instrument rules can quantize or reject orders, mark prices can trigger maintenance-margin liquidation under the currently supported single-position cross-margin model, and one shared bar-volume budget can produce partial fills with explicit remainder and protection policies.
+- **Backtest plugins.** Plugins remain separate packages. `EngineRunSpec` can request an execution-contract version and named capabilities; negotiation fails closed when a plugin cannot honor them. Passing the same public fixtures and archived evidence proves that runtimes followed the same declared deterministic rules. It does not prove that an OHLCV simulation reproduced a real exchange's order-book queue or historical account fill.
+
+- **Sandbox execution.** The built-in Binance USD-M Futures testnet broker accepts market, limit and stop entries. Every entry requires a full stop-loss/take-profit bracket, and protection is confirmed immediately after a full fill; a working entry is supervised independently of blocked or retrying market-data requests. Venue commissions are read from `userTrades` and are never converted from another asset. A partial fill triggers containment instead of being adopted as a running strategy position. Signed requests support measured server-time skew; excessive skew and exhausted market-data retries fail with stable reasons.
+- **Execution scope.** The CLI and built-in Binance sandbox broker target futures. Data adapters serve both spot and futures, selected by `exchange_type`. Fees for a venue and market without a built-in schedule must be passed explicitly — `resolve_execution_settings` raises rather than defaulting to zero. This package does not implement built-in spot order execution.
 - **No real-money trading.** Only `paper` and `binance_sandbox` are reachable execution modes. WhiteBIT execution fails closed. These boundaries are enforced in code and pinned by safety tests.
 
-Backtest and paper results are simplified simulations. Depending on the omitted market effects and fill assumptions, they may overstate or understate real execution. Treat them as research evidence, not as a forecast of returns.
+Even the richest paper profile is a calibrated OHLCV proxy, not an order-book or queue-position simulator. Latency values are deterministic assumptions, and a bar's volume does not show which liquidity was available at a particular price. Results may overstate or understate actual execution. Treat them as reproducible research evidence, not as a forecast or guarantee of returns.
 
 ## Architecture
 

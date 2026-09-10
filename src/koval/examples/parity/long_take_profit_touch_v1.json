@@ -1,0 +1,100 @@
+{
+  "fixture_id": "long_take_profit_touch_v1",
+  "contract": "koval_execution_contract_v1",
+  "exchange": "binance",
+  "exchange_type": "future",
+  "timeframe": "1h",
+  "capital": 10000.0,
+  "costs": {
+    "commission_bps": 4.0,
+    "spread_bps": 20.0,
+    "slippage_bps": 10.0,
+    "leverage": 1.0
+  },
+  "graph": {
+    "blocks": [
+      {
+        "id": "sig",
+        "type": "signal.every_bar",
+        "params": {
+          "direction": "bullish"
+        }
+      },
+      {
+        "id": "ent",
+        "type": "entry.long_only",
+        "params": {
+          "entry_type": "market"
+        }
+      },
+      {
+        "id": "ex",
+        "type": "exit.fixed_sl_tp",
+        "params": {
+          "sl_pct": 10.0,
+          "risk_reward": 2.0
+        }
+      },
+      {
+        "id": "rsk",
+        "type": "risk.pct_risk",
+        "params": {
+          "risk_pct": 0.2,
+          "leverage": 1.0
+        }
+      }
+    ],
+    "connections": [
+      {
+        "from": "sig",
+        "to": "ent"
+      },
+      {
+        "from": "ent",
+        "to": "ex"
+      },
+      {
+        "from": "ex",
+        "to": "rsk"
+      }
+    ]
+  },
+  "candles": [
+    [
+      1704067200000,
+      100,
+      101,
+      99,
+      100,
+      1
+    ],
+    [
+      1704070800000,
+      100,
+      100.5,
+      99.5,
+      100,
+      1
+    ],
+    [
+      1704074400000,
+      110,
+      121,
+      109,
+      120,
+      1
+    ]
+  ],
+  "expected": {
+    "trades": [
+      {
+        "direction": "long",
+        "entry_price": 100.2,
+        "exit_price": 119.76,
+        "commission": 0.175968,
+        "exit_reason": "tp"
+      }
+    ],
+    "final_equity": 10038.944032
+  }
+}

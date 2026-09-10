@@ -96,3 +96,41 @@ def test_empty_fetch_result_reports_cleanly(capsys, example_graph):
     assert exit_code == 1
     assert "no candles" in captured.err.lower()
     assert "Traceback" not in captured.err
+
+
+def test_exchange_type_flag_threads_into_fetch_and_execution_config(example_graph):
+    candles = np.array(
+        [[1_700_000_000_000 + i * 3_600_000, 10, 11, 9, 10.5, 100.0] for i in range(5)]
+    )
+    cache = MagicMock()
+    cache.get.return_value = candles
+    engine = MagicMock()
+    engine.run.return_value = MagicMock(metrics={"total_trades": 0}, trades=[])
+
+    with (
+        patch("koval.cli.main.OhlcvCache", return_value=cache),
+        patch("koval.engine.backtest_engine.load_backtest_engine", return_value=engine),
+    ):
+        exit_code = main(
+            [
+                "backtest",
+                example_graph,
+                "--exchange",
+                "binance",
+                "--exchange-type",
+                "spot",
+                "--symbol",
+                "BTCUSDT",
+                "--timeframe",
+                "1h",
+                "--from",
+                "2024-01-01",
+                "--to",
+                "2024-02-01",
+            ]
+        )
+
+    assert exit_code == 0
+    assert cache.get.call_args.kwargs["exchange_type"] == "spot"
+    spec = engine.run.call_args.args[0]
+    assert spec.execution_config["exchange_type"] == "spot"

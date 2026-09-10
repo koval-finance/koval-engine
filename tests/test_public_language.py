@@ -23,6 +23,7 @@ EXCLUDED_PARTS = {
     ".claude",
     ".git",
     ".private",
+    "agent_docs",
     ".pytest_cache",
     ".ruff_cache",
     ".venv",
@@ -123,3 +124,11 @@ def test_public_language_scanner_covers_repository_text_and_configuration():
         Path("README.md"),
         Path("pyproject.toml"),
     } <= scanned
+
+
+def test_language_scanner_skips_untracked_private_directories():
+    from tests.test_public_surface import FORBIDDEN_PATHS
+
+    private_dir_names = {Path(path).name for path in FORBIDDEN_PATHS if not path.startswith("src/")}
+    missing = sorted(private_dir_names - EXCLUDED_PARTS)
+    assert missing == [], f"language scanner must skip private directories: {missing}"

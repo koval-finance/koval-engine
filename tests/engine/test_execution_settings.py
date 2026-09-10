@@ -122,3 +122,38 @@ def test_invalid_fee_values_fall_back_to_finite_non_negative_exchange_defaults(f
     assert math.isfinite(settings.commission_rate)
     assert settings.commission_rate >= 0
     assert settings.fee_source == "exchange_default"
+
+
+def test_unknown_fee_schedule_fails_instead_of_zero():
+    from koval.engine.execution_settings import resolve_execution_settings
+
+    with pytest.raises(ValueError, match="no default fee schedule"):
+        resolve_execution_settings({"exchange": "whitebit", "exchange_type": "future"})
+    settings = resolve_execution_settings(
+        {
+            "exchange": "whitebit",
+            "exchange_type": "future",
+            "maker_fee_bps": 1.0,
+            "taker_fee_bps": 3.5,
+        }
+    )
+    assert settings.taker_fee_bps == 3.5 and settings.fee_source == "config_override"
+
+
+def test_unrecognized_market_string_is_rejected_like_canonical_market():
+    """Execution settings must not be laxer than ``markets.canonical_market``:
+    an unrecognized market string fails instead of silently resolving to spot."""
+    from koval.exchanges.markets import canonical_market
+
+    with pytest.raises(ValueError):
+        canonical_market("swap")
+    with pytest.raises(ValueError):
+        resolve_execution_settings({"exchange": "binance", "exchange_type": "swap"})
+
+
+def test_whitebit_spot_has_a_default_fee_schedule():
+    settings = resolve_execution_settings({"exchange": "whitebit", "exchange_type": "spot"})
+
+    assert settings.maker_fee_bps == 10.0
+    assert settings.taker_fee_bps == 10.0
+    assert settings.fee_source == "exchange_default"

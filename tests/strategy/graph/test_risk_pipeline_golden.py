@@ -56,7 +56,7 @@ def teardown_function():
     NODE_CATALOG.pop("test.scripted_intent", None)
 
 
-def _ctx(drawdown_pct=0.0):
+def _ctx(drawdown_pct=0.0, daily_loss_pct=0.0):
     return BarContext(
         close=100.0,
         high=101.0,
@@ -77,6 +77,7 @@ def _ctx(drawdown_pct=0.0):
             daily_pnl=0.0,
             peak_equity=10_000.0,
             drawdown_pct=drawdown_pct,
+            daily_loss_pct=daily_loss_pct,
             open_positions=0,
             open_position=None,
         ),
@@ -124,7 +125,7 @@ def test_pipeline_routes_single_terminal_order_when_approved():
 def test_pipeline_blocks_terminal_order_on_drawdown_lockout():
     _register_scripted_intent()
     ex = GraphExecutor.build(_pipeline_graph())
-    result = ex.step(_ctx(drawdown_pct=6.0))  # > 5% daily drawdown → portfolio lockout
+    result = ex.step(_ctx(daily_loss_pct=6.0))  # > 5% daily loss → portfolio lockout
     assert result.orders == []
 
 

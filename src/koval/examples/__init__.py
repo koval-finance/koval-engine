@@ -7,6 +7,7 @@ run the documented quickstart — no git checkout required. Use
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 EXAMPLES_DIR = Path(__file__).resolve().parent
@@ -22,4 +23,17 @@ def available_graphs() -> list[str]:
     return sorted(path.stem for path in (EXAMPLES_DIR / "graphs").glob("*.json"))
 
 
-__all__ = ["EXAMPLES_DIR", "available_graphs", "example_path"]
+def parity_fixtures() -> list[dict]:
+    """Public golden execution fixtures; every runtime must reproduce them.
+
+    Each fixture states a graph, a candle series, the execution assumptions and
+    the fills and final equity the Koval execution contract requires. The paper
+    broker, any backtest plugin and the application all assert against these
+    same files, which is what makes "same rules everywhere" checkable rather
+    than claimed.
+    """
+    files = sorted((EXAMPLES_DIR / "parity").glob("*.json"))
+    return [json.loads(path.read_text(encoding="utf-8")) for path in files]
+
+
+__all__ = ["EXAMPLES_DIR", "available_graphs", "example_path", "parity_fixtures"]

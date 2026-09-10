@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "koval-engine"
-version = "0.9.0"
+version = "0.10.0"
 description = "Open engine for building and validating trading strategies: backtest, paper, and exchange-sandbox live. No real-money path."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -63,7 +63,14 @@ where = ["src"]
 include = ["koval*"]
 
 [tool.setuptools.package-data]
-koval = ["py.typed", "examples/graphs/*.json", "examples/data/*.csv", "examples/data/*.md"]
+koval = [
+    "py.typed",
+    "examples/graphs/*.json",
+    "examples/data/*.csv",
+    "examples/data/*.md",
+    "examples/parity/*.json",
+    "examples/parity/CHECKSUMS.txt",
+]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

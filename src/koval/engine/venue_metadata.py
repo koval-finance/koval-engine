@@ -22,6 +22,7 @@ class VenueSymbolMetadata:
     max_notional: str | None = None
     market_quantity_step: str | None = None
     market_min_qty: str | None = None
+    quote_asset: str = ""
 
 
 @dataclass(frozen=True)

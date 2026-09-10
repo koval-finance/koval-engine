@@ -137,6 +137,8 @@ def test_polling_feed_reports_and_stops_on_continuity_gap():
         {"lookback_bars": 0},
         {"lookback_bars": 1.5},
         {"lookback_bars": True},
+        {"max_consecutive_failures": 0},
+        {"max_consecutive_failures": True},
         {"start_after_ms": -1},
         {"start_after_ms": 1},
         {"start_after_ms": True},
@@ -188,3 +190,124 @@ def test_polling_feed_rejects_invalid_clock_values_without_retrying(now):
         next(feed.bars(NoRetryStop()))
 
     assert adapter.calls == 0
+
+
+def test_polling_feed_calls_between_bars_hook_while_waiting():
+    import threading
+
+    from koval.engine.live_feed import PollingFeed
+
+    calls = []
+    feed = PollingFeed(
+        _FakeAdapter(_candles(2)),
+        symbol="BTCUSDT",
+        timeframe="1m",
+        clock=lambda: 120_000,
+        poll_seconds=1.0,
+        between_bars=lambda: calls.append(1),
+        between_bars_seconds=0.005,
+    )
+    stop = StopSignal()
+    bars = feed.bars(stop)
+    next(bars)
+    next(bars)
+    threading.Timer(0.06, stop.set).start()
+    list(bars)
+    assert len(calls) >= 3
+
+
+def test_polling_feed_rejects_a_non_callable_between_bars_hook():
+    from koval.engine.live_feed import PollingFeed
+
+    with pytest.raises(ValueError, match="between_bars"):
+        PollingFeed(
+            _FakeAdapter(_candles(2)),
+            symbol="BTCUSDT",
+            timeframe="1m",
+            between_bars="not-callable",
+        )
+
+
+def test_polling_feed_keeps_order_supervision_alive_during_data_outage():
+    from koval.engine.live_feed import PollingFeed
+
+    class FlakyAdapter:
+        def __init__(self):
+            self.calls = 0
+
+        def fetch_ohlcv(self, symbol, timeframe, start_ms, end_ms):
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("public data unavailable")
+            return _candles(1)
+
+    class ImmediateWaitStop(StopSignal):
+        def wait(self, seconds):
+            return False
+
+    supervised = []
+    feed = PollingFeed(
+        FlakyAdapter(),
+        symbol="BTCUSDT",
+        timeframe="1m",
+        clock=lambda: 60_000,
+        poll_seconds=0.0,
+        between_bars=lambda: supervised.append("polled"),
+        between_bars_seconds=0.25,
+    )
+
+    bar = next(feed.bars(ImmediateWaitStop()))
+
+    assert int(bar[0]) == 0
+    assert len(supervised) == 4
+
+
+def test_polling_feed_supervises_orders_while_http_fetch_is_blocked():
+    import time
+
+    from koval.engine.live_feed import PollingFeed
+
+    class SlowAdapter:
+        def fetch_ohlcv(self, symbol, timeframe, start_ms, end_ms):
+            time.sleep(0.04)
+            return _candles(1)
+
+    supervised = []
+    feed = PollingFeed(
+        SlowAdapter(),
+        symbol="BTCUSDT",
+        timeframe="1m",
+        clock=lambda: 60_000,
+        poll_seconds=0.0,
+        between_bars=lambda: supervised.append("polled"),
+        between_bars_seconds=0.005,
+    )
+
+    bar = next(feed.bars(StopSignal()))
+
+    assert int(bar[0]) == 0
+    assert len(supervised) >= 3
+
+
+def test_polling_feed_fails_with_stable_reason_after_bounded_outage_retries():
+    from koval.engine.live_feed import PollingFeed
+
+    class OfflineAdapter:
+        def fetch_ohlcv(self, symbol, timeframe, start_ms, end_ms):
+            raise RuntimeError("offline")
+
+    class ImmediateWaitStop(StopSignal):
+        def wait(self, seconds):
+            return False
+
+    feed = PollingFeed(
+        OfflineAdapter(),
+        symbol="BTCUSDT",
+        timeframe="1m",
+        clock=lambda: 60_000,
+        poll_seconds=0.0,
+        max_consecutive_failures=2,
+    )
+
+    with pytest.raises(FeedContinuityError, match="market_data_retry_exhausted"):
+        next(feed.bars(ImmediateWaitStop()))

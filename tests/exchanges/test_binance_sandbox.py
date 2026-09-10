@@ -5,7 +5,7 @@ import requests
 import responses
 
 from koval.engine.broker import BrokerOrderIntent, ProtectiveOrderIntent
-from koval.exchanges.binance_sandbox import BinanceSandboxBroker
+from koval.exchanges.binance_sandbox import BinanceSandboxBroker, ClockSkewExceeded
 
 
 def test_constructor_defaults_to_futures_testnet_and_rejects_production_url():
@@ -104,6 +104,7 @@ def test_submit_entry_sends_signed_order_without_secret_in_ack_metadata():
             "symbol": "BTCUSDT",
         },
     )
+    _no_venue_fees()
     broker = BinanceSandboxBroker(api_key="key", api_secret="secret")
 
     ack = broker.submit_entry(
@@ -153,6 +154,34 @@ def test_signed_transport_error_does_not_expose_signed_url_or_request_objects():
     assert "secret-123" not in message
     assert captured.value.request is None
     assert captured.value.response is None
+
+
+@responses.activate
+def test_server_time_sync_measures_skew_and_corrects_signed_timestamp():
+    responses.add(
+        responses.GET,
+        "https://testnet.binancefuture.com/fapi/v1/time",
+        json={"serverTime": 11_000},
+    )
+    responses.add(
+        responses.GET,
+        "https://testnet.binancefuture.com/fapi/v1/order",
+        json={"status": "NEW", "clientOrderId": "kv-entry"},
+    )
+    readings = iter([10_000, 10_020, 10_020])
+    broker = BinanceSandboxBroker(
+        api_key="key",
+        api_secret="secret",
+        clock_ms=lambda: next(readings),
+    )
+
+    skew = broker.synchronize_clock()
+    broker._signed_request("GET", "/fapi/v1/order", {"symbol": "BTCUSDT"})  # noqa: SLF001
+
+    assert skew == 990
+    assert broker.clock_skew_ms == 990
+    assert "timestamp=11010" in responses.calls[1].request.url
+    assert "recvWindow=5000" in responses.calls[1].request.url
 
 
 @responses.activate
@@ -222,6 +251,7 @@ def test_submit_entry_sends_metadata_normalized_values():
             "symbol": "BTCUSDT",
         },
     )
+    _no_venue_fees()
     broker = BinanceSandboxBroker(api_key="key", api_secret="secret")
 
     broker.submit_entry(
@@ -324,6 +354,7 @@ def test_poll_fills_deduplicates_unchanged_order_state():
         "https://testnet.binancefuture.com/fapi/v1/order",
         json=filled_payload,
     )
+    _no_venue_fees()
     broker = BinanceSandboxBroker(api_key="key", api_secret="secret")
     broker._track_order(  # noqa: SLF001 - seed tracked order for poll test
         "kv-entry", "BTCUSDT", "entry", "buy", "s1"
@@ -351,6 +382,7 @@ def test_poll_fills_never_queries_or_relabels_another_sessions_orders():
             "updateTime": 123,
         },
     )
+    _no_venue_fees()
     broker = BinanceSandboxBroker(api_key="key", api_secret="secret")
     broker._track_order(  # noqa: SLF001
         "session-one-entry", "BTCUSDT", "entry", "buy", "session-1"
@@ -361,8 +393,13 @@ def test_poll_fills_never_queries_or_relabels_another_sessions_orders():
 
     fills = broker.poll_fills("session-1")
 
-    assert len(responses.calls) == 1
+    # The order query plus the venue fee lookup for the fill it discovered.
+    assert len(responses.calls) == 2
     assert "session-one-entry" in responses.calls[0].request.url
+    assert not any(
+        "session-two-entry" in call.request.url or "ETHUSDT" in call.request.url
+        for call in responses.calls
+    )
     assert fills[0].session_id == "session-1"
     assert "session-two-entry" in broker._tracked_orders  # noqa: SLF001
 
@@ -607,6 +644,15 @@ def _exchange_info(order_types=None):
     }
 
 
+def _no_venue_fees():
+    """Stub the venue fee lookup every completed fill now performs."""
+    responses.add(
+        responses.GET,
+        "https://testnet.binancefuture.com/fapi/v1/userTrades",
+        json=[],
+    )
+
+
 def _one_way_mode():
     responses.add(
         responses.GET,
@@ -635,8 +681,8 @@ def _entry_intent():
 def test_submit_entry_rejects_working_entry_types_before_network():
     broker = BinanceSandboxBroker(api_key="key", api_secret="secret")
 
-    for order_type in ("limit", "stop", "stop_market", "stop_limit"):
-        with pytest.raises(ValueError, match="market"):
+    for order_type in ("stop_market", "stop_limit"):
+        with pytest.raises(ValueError, match="market, limit and stop"):
             broker.submit_entry(
                 BrokerOrderIntent(
                     **{
@@ -669,6 +715,7 @@ def test_market_entry_uses_result_response_and_queues_immediate_fill():
             "symbol": "BTCUSDT",
         },
     )
+    _no_venue_fees()
     broker = BinanceSandboxBroker(api_key="key", api_secret="secret")
 
     ack = broker.submit_entry(_entry_intent())
@@ -722,6 +769,7 @@ def test_market_entry_and_protection_are_direction_safely_normalized():
         "https://testnet.binancefuture.com/fapi/v1/order",
         json={"orderId": 125, "status": "NEW", "clientOrderId": "kv-target"},
     )
+    _no_venue_fees()
     broker = BinanceSandboxBroker(api_key="key", api_secret="secret")
     intent = BrokerOrderIntent(
         session_id="s1",
@@ -753,9 +801,14 @@ def test_market_entry_and_protection_are_direction_safely_normalized():
         )
     )
 
-    entry_url = responses.calls[2].request.url
-    stop_url = responses.calls[3].request.url
-    target_url = responses.calls[4].request.url
+    # Order POSTs only: a venue fee lookup now sits between the entry fill and
+    # the protection orders, so select by endpoint rather than by index.
+    order_urls = [
+        call.request.url
+        for call in responses.calls
+        if call.request.method == "POST" and "/fapi/v1/order" in call.request.url
+    ]
+    entry_url, stop_url, target_url = order_urls[:3]
     assert "quantity=0.01" in entry_url
     assert "stopPrice=114.8" in stop_url
     assert "stopPrice=121.8" in target_url
@@ -792,6 +845,7 @@ def test_poll_fills_queries_by_symbol_and_tracks_position_state():
             "updateTime": 123,
         },
     )
+    _no_venue_fees()
     broker = BinanceSandboxBroker(api_key="key", api_secret="secret")
     broker._track_order("kv-entry", "BTCUSDT", "entry", "buy", "s1")  # noqa: SLF001
     fills = broker.poll_fills("s1")
@@ -822,6 +876,7 @@ def test_poll_fills_reports_incremental_quantity_for_partial_updates():
                 "updateTime": 123,
             },
         )
+    _no_venue_fees()
     broker = BinanceSandboxBroker(api_key="key", api_secret="secret")
     broker._track_order("kv-entry", "BTCUSDT", "entry", "buy", "s1")  # noqa: SLF001
 
@@ -901,6 +956,7 @@ def test_protective_fill_preserves_position_side_and_role():
             "symbol": "BTCUSDT",
         },
     )
+    _no_venue_fees()
     broker = BinanceSandboxBroker(api_key="key", api_secret="secret")
     broker.place_protection(
         ProtectiveOrderIntent(
@@ -1171,3 +1227,303 @@ def test_modify_stop_rejects_a_change_that_increases_risk():
         assert "tighten" in str(exc)
     else:
         raise AssertionError("expected a risk-increasing stop update to fail")
+
+
+def _user_trades(order_id: int, trades: list[dict]) -> None:
+    responses.add(
+        responses.GET,
+        "https://testnet.binancefuture.com/fapi/v1/userTrades",
+        json=trades,
+    )
+
+
+@responses.activate
+def test_limit_entry_is_sent_as_gtc_limit():
+    _one_way_mode()
+    responses.add(
+        responses.GET,
+        "https://testnet.binancefuture.com/fapi/v1/exchangeInfo",
+        json=_exchange_info(["MARKET", "LIMIT", "STOP_MARKET"]),
+    )
+    responses.add(
+        responses.POST,
+        "https://testnet.binancefuture.com/fapi/v1/order",
+        json={
+            "orderId": 7,
+            "status": "NEW",
+            "clientOrderId": "kv-entry",
+            "symbol": "BTCUSDT",
+        },
+    )
+    broker = BinanceSandboxBroker(api_key="key", api_secret="secret")
+
+    intent = BrokerOrderIntent(
+        **{**_entry_intent().__dict__, "order_type": "limit", "price": "100.50"}
+    )
+    ack = broker.submit_entry(intent)
+
+    assert ack.status == "accepted"
+    sent = responses.calls[2].request.url
+    assert "type=LIMIT" in sent
+    assert "timeInForce=GTC" in sent
+    assert "price=100.50" in sent
+
+
+@responses.activate
+def test_stop_entry_is_sent_as_stop_market():
+    _one_way_mode()
+    responses.add(
+        responses.GET,
+        "https://testnet.binancefuture.com/fapi/v1/exchangeInfo",
+        json=_exchange_info(["MARKET", "LIMIT", "STOP_MARKET"]),
+    )
+    responses.add(
+        responses.POST,
+        "https://testnet.binancefuture.com/fapi/v1/order",
+        json={
+            "orderId": 11,
+            "status": "NEW",
+            "clientOrderId": "kv-entry",
+            "symbol": "BTCUSDT",
+        },
+    )
+    broker = BinanceSandboxBroker(api_key="key", api_secret="secret")
+
+    ack = broker.submit_entry(
+        BrokerOrderIntent(**{**_entry_intent().__dict__, "order_type": "stop"})
+    )
+
+    assert ack.status == "accepted"
+    sent = responses.calls[2].request.url
+    assert "type=STOP_MARKET" in sent
+    assert "stopPrice=100.00" in sent
+
+
+@responses.activate
+def test_filled_entry_reads_commission_from_user_trades():
+    _one_way_mode()
+    responses.add(
+        responses.GET,
+        "https://testnet.binancefuture.com/fapi/v1/exchangeInfo",
+        json=_exchange_info(["MARKET"]),
+    )
+    responses.add(
+        responses.POST,
+        "https://testnet.binancefuture.com/fapi/v1/order",
+        json={
+            "orderId": 8,
+            "status": "FILLED",
+            "clientOrderId": "kv-entry",
+            "executedQty": "0.010",
+            "avgPrice": "100.20",
+            "symbol": "BTCUSDT",
+        },
+    )
+    _user_trades(
+        8,
+        [
+            {
+                "commission": "0.0004008",
+                "commissionAsset": "USDT",
+                "realizedPnl": "0",
+                "qty": "0.010",
+                "price": "100.20",
+            }
+        ],
+    )
+    broker = BinanceSandboxBroker(api_key="key", api_secret="secret")
+
+    broker.submit_entry(_entry_intent())
+    (fill,) = broker.poll_fills("s1")
+
+    assert fill.metadata["commission"] == "0.0004008"
+    assert fill.metadata["commission_asset"] == "USDT"
+    assert fill.metadata["commission_unconverted"] is False
+
+
+@responses.activate
+def test_bnb_commission_is_recorded_but_not_converted():
+    _one_way_mode()
+    responses.add(
+        responses.GET,
+        "https://testnet.binancefuture.com/fapi/v1/exchangeInfo",
+        json=_exchange_info(["MARKET"]),
+    )
+    responses.add(
+        responses.POST,
+        "https://testnet.binancefuture.com/fapi/v1/order",
+        json={
+            "orderId": 9,
+            "status": "FILLED",
+            "clientOrderId": "kv-entry",
+            "executedQty": "0.010",
+            "avgPrice": "100.20",
+            "symbol": "BTCUSDT",
+        },
+    )
+    _user_trades(
+        9,
+        [
+            {
+                "commission": "0.0000012",
+                "commissionAsset": "BNB",
+                "realizedPnl": "0",
+                "qty": "0.010",
+                "price": "100.20",
+            }
+        ],
+    )
+    broker = BinanceSandboxBroker(api_key="key", api_secret="secret")
+
+    broker.submit_entry(_entry_intent())
+    (fill,) = broker.poll_fills("s1")
+
+    assert fill.metadata["commission"] == "0"
+    assert fill.metadata["commission_unconverted"] is True
+
+
+@responses.activate
+def test_commission_asset_uses_exchange_info_quote_asset_not_a_suffix_guess():
+    """A non-USDT/USDC/BUSD quote (e.g. FDUSD) must be read from exchangeInfo,
+    not guessed from the symbol suffix, so its commission is attributed and
+    counted rather than silently flagged unconverted."""
+    _one_way_mode()
+    responses.add(
+        responses.GET,
+        "https://testnet.binancefuture.com/fapi/v1/exchangeInfo",
+        json={
+            "symbols": [
+                {
+                    "symbol": "BTCFDUSD",
+                    "status": "TRADING",
+                    "quoteAsset": "FDUSD",
+                    "pricePrecision": 2,
+                    "quantityPrecision": 3,
+                    "orderTypes": ["MARKET"],
+                    "filters": [
+                        {"filterType": "PRICE_FILTER", "tickSize": "0.01"},
+                        {"filterType": "LOT_SIZE", "stepSize": "0.001", "minQty": "0.001"},
+                        {"filterType": "MIN_NOTIONAL", "notional": "1"},
+                    ],
+                }
+            ]
+        },
+    )
+    responses.add(
+        responses.POST,
+        "https://testnet.binancefuture.com/fapi/v1/order",
+        json={
+            "orderId": 21,
+            "status": "FILLED",
+            "clientOrderId": "kv-entry",
+            "executedQty": "0.010",
+            "avgPrice": "100.20",
+            "symbol": "BTCFDUSD",
+        },
+    )
+    _user_trades(
+        21,
+        [
+            {
+                "commission": "0.0004008",
+                "commissionAsset": "FDUSD",
+                "realizedPnl": "0",
+                "qty": "0.010",
+                "price": "100.20",
+            }
+        ],
+    )
+    broker = BinanceSandboxBroker(api_key="key", api_secret="secret")
+    broker.submit_entry(BrokerOrderIntent(**{**_entry_intent().__dict__, "symbol": "BTCFDUSD"}))
+    (fill,) = broker.poll_fills("s1")
+
+    assert fill.metadata["commission_asset"] == "FDUSD"
+    assert fill.metadata["commission"] == "0.0004008"
+    assert fill.metadata["commission_unconverted"] is False
+
+
+def test_fetch_metadata_records_quote_asset():
+    import responses as _responses
+
+    with _responses.RequestsMock() as rsps:
+        rsps.add(
+            _responses.GET,
+            "https://testnet.binancefuture.com/fapi/v1/exchangeInfo",
+            json={
+                "symbols": [
+                    {
+                        "symbol": "BTCFDUSD",
+                        "status": "TRADING",
+                        "quoteAsset": "FDUSD",
+                        "orderTypes": ["MARKET"],
+                        "filters": [
+                            {"filterType": "PRICE_FILTER", "tickSize": "0.01"},
+                            {"filterType": "LOT_SIZE", "stepSize": "0.001", "minQty": "0.001"},
+                            {"filterType": "MIN_NOTIONAL", "notional": "1"},
+                        ],
+                    }
+                ]
+            },
+        )
+        broker = BinanceSandboxBroker(api_key="key", api_secret="secret")
+        metadata = broker.fetch_metadata("BTCFDUSD")
+
+    assert metadata.quote_asset == "FDUSD"
+
+
+@responses.activate
+def test_margin_used_reflects_position_risk_leverage_after_entry():
+    _one_way_mode()
+    responses.add(
+        responses.GET,
+        "https://testnet.binancefuture.com/fapi/v1/exchangeInfo",
+        json=_exchange_info(["MARKET"]),
+    )
+    responses.add(
+        responses.POST,
+        "https://testnet.binancefuture.com/fapi/v1/order",
+        json={
+            "orderId": 30,
+            "status": "FILLED",
+            "clientOrderId": "kv-entry",
+            "executedQty": "0.010",
+            "avgPrice": "100.20",
+            "symbol": "BTCUSDT",
+        },
+    )
+    _user_trades(30, [])
+    responses.add(
+        responses.GET,
+        "https://testnet.binancefuture.com/fapi/v2/positionRisk",
+        json={
+            "data": [
+                {
+                    "symbol": "BTCUSDT",
+                    "positionAmt": "0.010",
+                    "entryPrice": "100.20",
+                    "leverage": "5",
+                    "notional": "1.002",
+                }
+            ]
+        },
+    )
+    broker = BinanceSandboxBroker(api_key="key", api_secret="secret")
+    assert broker.margin_used == 0.0
+
+    broker.submit_entry(_entry_intent())
+    broker.poll_fills("s1")
+
+    assert broker.margin_used == pytest.approx(1.002 / 5)
+
+
+@responses.activate
+def test_a_host_clock_beyond_the_supported_skew_fails_closed():
+    responses.add(
+        responses.GET,
+        "https://testnet.binancefuture.com/fapi/v1/time",
+        json={"serverTime": 10_000 + 120_000},
+    )
+    broker = BinanceSandboxBroker(api_key="key", api_secret="secret", clock_ms=lambda: 10_000)
+
+    with pytest.raises(ClockSkewExceeded, match="clock_skew_exceeded"):
+        broker.synchronize_clock()

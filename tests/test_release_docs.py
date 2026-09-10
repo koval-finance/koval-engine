@@ -24,7 +24,7 @@ def test_readme_does_not_make_unscoped_execution_model_claims():
     assert "**Paper simulation.**" in readme
     assert "**Backtest plugins.**" in readme
     assert "**Sandbox execution.**" in readme
-    assert "market entries only" in readme
+    assert "market, limit and stop entries" in readme
     assert "partial fill triggers containment" in readme
 
 
@@ -34,6 +34,13 @@ def test_readme_links_are_absolute_for_the_pypi_description():
     relative = [target for target in link_targets if not target.startswith(("https://", "http://"))]
 
     assert relative == []
+
+
+def test_readme_does_not_advertise_unpublished_planning_documents():
+    readme = README.read_text(encoding="utf-8")
+
+    assert "execution_contract_plan.md" not in readme
+    assert "These capabilities are not implemented by this documentation update." not in readme
 
 
 def test_contributing_says_the_documented_command_excludes_plugin_tests():

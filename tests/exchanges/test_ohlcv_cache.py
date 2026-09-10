@@ -37,6 +37,45 @@ def test_full_miss_fetches_from_adapter_and_persists(cache, fake_adapter_factory
     assert len(adapter.calls) == 1
 
 
+def test_evidence_get_returns_archive_ready_identity(cache, fake_adapter_factory):
+    start = 1_700_000_000_000
+    adapter = fake_adapter_factory(_candles(start, 2), exchange="binance", market="future")
+
+    dataset = cache.get_evidence(
+        adapter,
+        exchange="binance",
+        exchange_type="future",
+        symbol="BTC/USDT",
+        timeframe="1m",
+        start_ms=start,
+        end_ms=start + 120_000,
+    )
+
+    assert dataset.metadata.exchange == "binance"
+    assert dataset.metadata.market == "future"
+    assert dataset.metadata.source == "binance:future:production:ohlcv"
+    assert dataset.metadata.row_count == 2
+    assert dataset.sha256
+
+
+def test_evidence_get_rejects_a_range_that_contains_the_forming_bar(tmp_path, fake_adapter_factory):
+    cache = OhlcvCache(root=tmp_path, now_ms=lambda: 120_000)
+    adapter = fake_adapter_factory(_candles(0, 3), exchange="binance", market="future")
+
+    with pytest.raises(ValueError, match="closed bars"):
+        cache.get_evidence(
+            adapter,
+            exchange="binance",
+            exchange_type="future",
+            symbol="BTC/USDT",
+            timeframe="1m",
+            start_ms=0,
+            end_ms=180_000,
+        )
+
+    assert adapter.calls == []
+
+
 def test_full_hit_does_not_call_adapter(cache, fake_adapter_factory):
     adapter = fake_adapter_factory(_candles(1_700_000_000_000, 10))
     cache.get(
@@ -62,7 +101,9 @@ def test_full_hit_does_not_call_adapter(cache, fake_adapter_factory):
 
 
 def test_parquet_file_layout(cache, fake_adapter_factory, tmp_path):
-    adapter = fake_adapter_factory(_candles(1_700_000_000_000, 5))
+    adapter = fake_adapter_factory(
+        _candles(1_700_000_000_000, 5), exchange="binance", market="future"
+    )
     cache.get(
         adapter,
         exchange="binance",
@@ -71,7 +112,7 @@ def test_parquet_file_layout(cache, fake_adapter_factory, tmp_path):
         start_ms=1_700_000_000_000,
         end_ms=1_700_000_300_000,
     )
-    expected = tmp_path / "binance" / "BTCUSDT_1h.parquet"
+    expected = tmp_path / "binance" / "future" / "BTCUSDT_1h.parquet"
     assert expected.is_file()
 
 
@@ -222,7 +263,7 @@ def test_persisted_file_is_sorted_and_unique(cache, fake_adapter_factory, tmp_pa
         end_ms=1_700_001_200_000,
     )
 
-    df = pd.read_parquet(tmp_path / "fake" / "BTCUSDT_1m.parquet")
+    df = pd.read_parquet(tmp_path / "fake" / "future" / "BTCUSDT_1m.parquet")
     ts = df["timestamp_ms"].to_numpy()
     assert (np.diff(ts) > 0).all()
     assert len(ts) == len(set(ts))
@@ -295,7 +336,7 @@ def test_forming_bar_not_persisted(tmp_path, fake_adapter_factory):
         end_ms=_ALIGNED_BASE + 700_000,
     )
 
-    df = pd.read_parquet(tmp_path / "fake" / "BTCUSDT_1m.parquet")
+    df = pd.read_parquet(tmp_path / "fake" / "future" / "BTCUSDT_1m.parquet")
     assert df["timestamp_ms"].max() == _ALIGNED_BASE + 540_000
 
 
@@ -319,7 +360,7 @@ def test_disjoint_requests_keep_parquet_contiguous(cache, fake_adapter_factory, 
         end_ms=1_700_001_800_000,
     )
 
-    df = pd.read_parquet(tmp_path / "fake" / "BTCUSDT_1m.parquet")
+    df = pd.read_parquet(tmp_path / "fake" / "future" / "BTCUSDT_1m.parquet")
     ts = df["timestamp_ms"].to_numpy()
     expected = np.array([1_700_000_000_000 + i * 60_000 for i in range(30)], dtype=np.int64)
     np.testing.assert_array_equal(ts, expected)
@@ -350,7 +391,7 @@ def test_internal_hole_is_refetched_and_repaired(cache, fake_adapter_factory, tm
         start_ms=start_ms,
         end_ms=start_ms + 600_000,
     )
-    path = tmp_path / "fake" / "BTCUSDT_1m.parquet"
+    path = tmp_path / "fake" / "future" / "BTCUSDT_1m.parquet"
     damaged = pd.read_parquet(path).drop(index=4)
     damaged.to_parquet(path, index=False)
     adapter.calls.clear()
@@ -386,7 +427,7 @@ def test_unresolved_internal_hole_fails_without_rewriting_cache(
         start_ms=start_ms,
         end_ms=start_ms + 600_000,
     )
-    path = tmp_path / "fake" / "BTCUSDT_1m.parquet"
+    path = tmp_path / "fake" / "future" / "BTCUSDT_1m.parquet"
     damaged = pd.read_parquet(path).drop(index=4)
     damaged.to_parquet(path, index=False)
     original = path.read_bytes()
@@ -418,7 +459,7 @@ def test_failed_write_preserves_existing_parquet(
         start_ms=start_ms,
         end_ms=start_ms + 180_000,
     )
-    path = tmp_path / "fake" / "BTCUSDT_1m.parquet"
+    path = tmp_path / "fake" / "future" / "BTCUSDT_1m.parquet"
     original = path.read_bytes()
 
     def fail_after_partial_write(self, target, *, index):
@@ -463,7 +504,56 @@ def test_parallel_writes_keep_parquet_sorted_and_unique(tmp_path, fake_adapter_f
     t1.join()
     t2.join()
 
-    df = pd.read_parquet(tmp_path / "fake" / "BTCUSDT_1m.parquet")
+    df = pd.read_parquet(tmp_path / "fake" / "future" / "BTCUSDT_1m.parquet")
     ts = df["timestamp_ms"].to_numpy()
     assert (np.diff(ts) > 0).all()
     assert len(ts) == 20
+
+
+def test_spot_and_futures_never_share_a_file(cache, fake_adapter_factory, tmp_path):
+    futures = fake_adapter_factory(_candles(1_700_000_000_000, 10), market="future")
+    spot = fake_adapter_factory(_candles(1_700_000_000_000, 10), market="spot")
+    kwargs = dict(
+        symbol="BTC/USDT",
+        timeframe="1m",
+        start_ms=1_700_000_000_000,
+        end_ms=1_700_000_600_000,
+    )
+    cache.get(futures, exchange="fake", exchange_type="future", **kwargs)
+    cache.get(spot, exchange="fake", exchange_type="spot", **kwargs)
+    assert (tmp_path / "fake" / "future" / "BTCUSDT_1m.parquet").is_file()
+    assert (tmp_path / "fake" / "spot" / "BTCUSDT_1m.parquet").is_file()
+    assert len(futures.calls) == 1 and len(spot.calls) == 1
+
+
+def test_legacy_binance_file_is_adopted_as_futures(cache, fake_adapter_factory, tmp_path):
+    legacy = tmp_path / "binance" / "BTCUSDT_1m.parquet"
+    legacy.parent.mkdir(parents=True)
+    pd.DataFrame(_candles(1_700_000_000_000, 10), columns=OHLCV_COLUMNS).to_parquet(
+        legacy, index=False
+    )
+    adapter = fake_adapter_factory([], exchange="binance", market="future")
+    out = cache.get(
+        adapter,
+        exchange="binance",
+        symbol="BTC/USDT",
+        timeframe="1m",
+        start_ms=1_700_000_000_000,
+        end_ms=1_700_000_600_000,
+    )
+    assert out.shape[0] == 10 and adapter.calls == []
+    assert not legacy.exists()
+    assert (tmp_path / "binance" / "future" / "BTCUSDT_1m.parquet").is_file()
+
+
+def test_adapter_identity_mismatch_fails(cache, fake_adapter_factory):
+    adapter = fake_adapter_factory([], exchange="binance", market="future")
+    with pytest.raises(ValueError, match="identity"):
+        cache.get(
+            adapter,
+            exchange="whitebit",
+            symbol="BTC/USDT",
+            timeframe="1m",
+            start_ms=0,
+            end_ms=60_000,
+        )

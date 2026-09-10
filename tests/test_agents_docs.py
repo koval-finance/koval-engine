@@ -72,6 +72,18 @@ def test_every_agents_docs_file_is_indexed():
     assert missing == [], f"agents_docs/README.md must index: {missing}"
 
 
+UNRELEASED_PLANNING_DOCUMENTS = ("execution_contract_plan.md",)
+
+
+def test_agents_docs_does_not_ship_unreleased_planning_documents():
+    present = [
+        name for name in UNRELEASED_PLANNING_DOCUMENTS if (ROOT / "agents_docs" / name).is_file()
+    ]
+    assert present == [], (
+        "unreleased planning belongs outside the published agent docs: " + ", ".join(present)
+    )
+
+
 POINTERS = (
     Path("CLAUDE.md"),
     Path("GEMINI.md"),

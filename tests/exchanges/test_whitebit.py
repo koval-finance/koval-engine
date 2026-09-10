@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 import requests
@@ -209,3 +210,64 @@ def test_fetch_ohlcv_rejects_non_advancing_pagination():
             start_s * 1000,
             (start_s + 300) * 1000,
         )
+
+
+def test_future_market_symbol_translation():
+    a = WhiteBITAdapter(market="future")
+    assert a._market_symbol("BTC_USDT") == "BTC_PERP"
+    assert a._market_symbol("BTC/USDT") == "BTC_PERP"
+    assert a._market_symbol("BTCUSDT") == "BTC_PERP"
+    assert a._market_symbol("BTC_PERP") == "BTC_PERP"
+    assert a._market_symbol("1000SHIBUSDT") == "1000SHIB_PERP"
+
+
+def test_future_market_symbol_rejects_unparseable_pair():
+    a = WhiteBITAdapter(market="future")
+    with pytest.raises(ValueError):
+        a._market_symbol("BTC")
+
+
+def test_spot_market_symbol_is_left_untranslated():
+    a = WhiteBITAdapter(market="spot")
+    assert a._market_symbol("BTCUSDT") == "BTCUSDT"
+    assert a._market_symbol("BTC/USDT") == "BTC_USDT"
+
+
+@responses.activate
+def test_fetch_funding_history_normalizes_whitebit_settlement_evidence():
+    interval_s = 8 * 60 * 60
+    first_settlement_s = interval_s
+    second_settlement_s = 2 * interval_s
+    responses.add(
+        responses.GET,
+        "https://whitebit.com/api/v4/public/funding-history/BTC_PERP",
+        json=[
+            {
+                "fundingTime": str(first_settlement_s),
+                "fundingRate": "0.0001",
+                "market": "BTC_PERP",
+                "settlementPrice": "100.5",
+                "rateCalculatedTime": "0",
+            },
+            {
+                "fundingTime": str(second_settlement_s),
+                "fundingRate": "-0.0002",
+                "market": "BTC_PERP",
+                "settlementPrice": "101.5",
+                "rateCalculatedTime": str(first_settlement_s),
+            },
+        ],
+    )
+    adapter = WhiteBITAdapter(market="future")
+
+    series = adapter.fetch_funding_history(
+        "BTCUSDT", first_settlement_s * 1000, second_settlement_s * 1000
+    )
+
+    assert series.canonical_symbol == "BTCUSDT"
+    assert series.records[0].settlement_timestamp_ms == first_settlement_s * 1000
+    assert series.records[0].rate_calculated_timestamp_ms == 0
+    assert str(series.records[1].settlement_mark_price) == "101.5"
+    assert series.coverage_complete
+    query = parse_qs(urlparse(responses.calls[0].request.url).query)
+    assert query["limit"] == ["100"]

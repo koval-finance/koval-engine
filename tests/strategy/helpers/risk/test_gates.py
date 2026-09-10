@@ -73,15 +73,27 @@ def test_trade_risk_rejects_over_leverage():
     assert not ok and "leverage" in reason.lower()
 
 
-def test_portfolio_rejects_on_daily_drawdown_lockout():
+def test_portfolio_rejects_on_daily_loss_lockout():
     ok, reason = portfolio_risk_check(
-        account=_snap(drawdown_pct=6.0),
+        account=_snap(drawdown_pct=20.0, daily_loss_pct=6.0),
         required_margin=100.0,
         max_daily_drawdown_pct=5.0,
         max_concurrent_positions=1,
         max_total_margin_pct=50.0,
     )
-    assert not ok and "drawdown" in reason.lower()
+    assert not ok and "daily loss" in reason.lower()
+
+
+def test_portfolio_does_not_treat_all_time_drawdown_as_daily_loss():
+    ok, reason = portfolio_risk_check(
+        account=_snap(drawdown_pct=20.0, daily_loss_pct=1.0),
+        required_margin=100.0,
+        max_daily_drawdown_pct=5.0,
+        max_concurrent_positions=1,
+        max_total_margin_pct=50.0,
+    )
+
+    assert ok and reason is None
 
 
 def test_portfolio_rejects_on_concurrent_cap():

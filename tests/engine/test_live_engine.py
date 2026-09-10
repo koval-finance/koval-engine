@@ -3,6 +3,8 @@ import pytest
 import requests
 
 from koval.engine.broker import BrokerFill, BrokerOrderAck
+from koval.engine.execution_proxy import ExecutionLatency, ExecutionProxyConfig
+from koval.engine.funding import FundingRecord, build_funding_series
 from koval.engine.live_engine import LiveEngine, LiveEngineConfig
 from koval.engine.live_feed import ReplayFeed, StopSignal
 from koval.engine.paper_broker import Fill, PaperBroker
@@ -84,6 +86,17 @@ class _SingleEntryStrategy(_ConfiguredSetupStrategy):
 
     def on_open_position(self, trade_id, setup):
         self.open_count += 1
+
+
+class _NoTradeHtfStrategy(_AlwaysLongStrategy):
+    def __init__(self):
+        self.seen_htf = []
+
+    def should_long(self):
+        return False
+
+    def on_bar(self):
+        self.seen_htf.append(None if self.htf_closes is None else self.htf_closes.copy())
 
 
 class _RecordingBroker:
@@ -214,6 +227,178 @@ def test_run_streams_one_bar_update_per_bar():
     _events, _trades, bars = _run(ema_cross_graph(), candles)
     assert len(bars) == len(candles)
     assert all("equity" in b and "close" in b for b in bars)
+
+
+def test_live_engine_passes_execution_proxy_to_its_default_paper_broker(monkeypatch):
+    from decimal import Decimal
+
+    monkeypatch.setattr(
+        "koval.engine.live_engine.assemble_from_graph", lambda graph: _AlwaysLongStrategy()
+    )
+    proxy = ExecutionProxyConfig(
+        maximum_volume_participation=Decimal("0.1"),
+        entry_remainder_policy="carry",
+        latency=ExecutionLatency(),
+    )
+    engine = LiveEngine(
+        {"blocks": [], "connections": []},
+        LiveEngineConfig(
+            symbol="BTCUSDT",
+            timeframe="1m",
+            initial_capital=10_000.0,
+            execution={
+                "version": "paper_ohlcv_realistic_v2",
+                "commission_bps": 4.0,
+                "spread_bps": 0.0,
+                "slippage_bps": 1.0,
+            },
+            execution_proxy=proxy,
+        ),
+    )
+    assert engine._broker.resolved_metadata["execution_model"] == "fixed_ohlcv_proxy"  # noqa: SLF001
+
+
+def test_live_account_uses_the_paper_brokers_authoritative_funding_ledger(monkeypatch):
+    from decimal import Decimal
+
+    monkeypatch.setattr(
+        "koval.engine.live_engine.assemble_from_graph", lambda graph: _SingleEntryStrategy()
+    )
+    records = tuple(
+        FundingRecord(
+            symbol="BTCUSDT",
+            rate=Decimal("0.0001"),
+            settlement_timestamp_ms=timestamp,
+            settlement_mark_price=Decimal("100"),
+            interval_ms=60_000,
+            source="test",
+        )
+        for timestamp in (0, 60_000, 120_000)
+    )
+    funding = build_funding_series(
+        records,
+        exchange="binance",
+        market="future",
+        symbol="BTCUSDT",
+        requested_start_ms=0,
+        requested_end_ms=120_000,
+    )
+    statuses = []
+    engine = LiveEngine(
+        {"blocks": [], "connections": []},
+        LiveEngineConfig(
+            symbol="BTCUSDT",
+            timeframe="1m",
+            initial_capital=10_000.0,
+            execution={
+                "version": "paper_ohlcv_realistic_v2",
+                "commission_bps": 0.0,
+                "spread_bps": 0.0,
+                "slippage_bps": 0.0,
+            },
+            funding=funding,
+        ),
+        on_status=statuses.append,
+    )
+
+    engine.run(
+        ReplayFeed(
+            np.array(
+                [
+                    [0, 100, 101, 99, 100, 10],
+                    [60_000, 100, 101, 99, 100, 10],
+                    [120_000, 100, 101, 99, 100, 10],
+                ],
+                dtype=float,
+            )
+        ),
+        StopSignal(),
+    )
+
+    assert statuses[-1]["metrics"]["funding"] == pytest.approx(-0.01)
+    assert statuses[-1]["metrics"]["balance"] == pytest.approx(9_999.99)
+
+
+def test_live_engine_injects_only_confirmed_higher_timeframe_bars(monkeypatch):
+    strategy = _NoTradeHtfStrategy()
+    monkeypatch.setattr("koval.engine.live_engine.assemble_from_graph", lambda graph: strategy)
+    events = []
+    engine = LiveEngine(
+        {"blocks": [], "connections": []},
+        LiveEngineConfig(
+            symbol="BTCUSDT",
+            timeframe="1m",
+            higher_timeframe="5m",
+            initial_capital=10_000.0,
+        ),
+        on_event=events.append,
+    )
+
+    engine.run(ReplayFeed(_ramp_then_drop(7, 0)), StopSignal())
+
+    assert all(value is None for value in strategy.seen_htf[:4])
+    assert strategy.seen_htf[4].tolist() == [105.0]
+    assert strategy.seen_htf[-1].tolist() == [105.0]
+    assert events[0]["payload"]["timeframes"] == {
+        "primary": "1m",
+        "higher": "5m",
+        "higher_status": "configured",
+    }
+
+
+def test_higher_timeframe_survives_a_feed_that_does_not_start_on_a_bucket_boundary(
+    monkeypatch,
+):
+    """A venue returns whatever bars its history had, and the rolling window
+    slides, so the window rarely begins on a higher-timeframe boundary. That
+    must not abort the session."""
+    strategy = _NoTradeHtfStrategy()
+    monkeypatch.setattr("koval.engine.live_engine.assemble_from_graph", lambda graph: strategy)
+    candles = _ramp_then_drop(10, 0)
+    candles[:, 0] += 2 * 60_000
+    engine = LiveEngine(
+        {"blocks": [], "connections": []},
+        LiveEngineConfig(
+            symbol="BTCUSDT",
+            timeframe="1m",
+            higher_timeframe="5m",
+            initial_capital=10_000.0,
+        ),
+    )
+
+    engine.run(ReplayFeed(candles), StopSignal())
+
+    assert all(value is None for value in strategy.seen_htf[:7])
+    assert strategy.seen_htf[-1].tolist() == [108.0]
+
+
+def test_required_higher_timeframe_blocks_entries_until_confirmed_data_exists(
+    monkeypatch,
+):
+    strategy = _SingleEntryStrategy()
+    monkeypatch.setattr("koval.engine.live_engine.assemble_from_graph", lambda graph: strategy)
+    events, statuses = [], []
+    engine = LiveEngine(
+        {"blocks": [], "connections": []},
+        LiveEngineConfig(
+            symbol="BTCUSDT",
+            timeframe="1m",
+            higher_timeframe="5m",
+            requires_higher_timeframe=True,
+            initial_capital=10_000.0,
+        ),
+        on_event=events.append,
+        on_status=statuses.append,
+    )
+
+    engine.run(ReplayFeed(_ramp_then_drop(4, 0)), StopSignal())
+
+    assert "TRADE_OPENED" not in [event["event_type"] for event in events]
+    assert statuses[-1]["higher_timeframe"] == {
+        "configured": "5m",
+        "required": True,
+        "available": False,
+    }
 
 
 def test_run_emits_signal_and_opens_then_closes_a_trade():
@@ -967,6 +1152,191 @@ def test_unconfirmed_containment_is_visible_in_terminal_status(monkeypatch):
     assert incidents[-1]["type"] == "containment_unconfirmed"
 
 
+def test_paper_entry_fill_deltas_resize_account_and_protection_once_open(monkeypatch):
+    monkeypatch.setattr(
+        "koval.engine.live_engine.assemble_from_graph", lambda graph: _AlwaysLongStrategy()
+    )
+    broker = _ImmediateFillBroker()
+    events = []
+    engine = LiveEngine(
+        {"blocks": [], "connections": []},
+        LiveEngineConfig(symbol="BTCUSDT", timeframe="1m", initial_capital=10_000.0),
+        session_id="session-1",
+        broker=broker,
+        on_event=events.append,
+    )
+    engine._pending_setup = _FakeSetup()  # noqa: SLF001
+    engine._last_entry_client_order_id = "kv-entry"  # noqa: SLF001
+    first = Fill(
+        "entry",
+        "buy",
+        100.0,
+        1.0,
+        0,
+        -0.04,
+        commission=0.04,
+        margin=100.0,
+        status="partial",
+        cumulative_quantity=1.0,
+    )
+    second = Fill(
+        "entry",
+        "buy",
+        102.0,
+        1.0,
+        60_000,
+        -0.04,
+        commission=0.04,
+        margin=102.0,
+        status="filled",
+        cumulative_quantity=2.0,
+    )
+
+    engine._apply_paper_fill(first)  # noqa: SLF001
+    engine._apply_paper_fill(second)  # noqa: SLF001
+
+    position = engine._account.snapshot().open_position  # noqa: SLF001
+    assert position.quantity == 2.0
+    assert position.entry_price == 101.0
+    assert engine._account.snapshot().margin_used == 202.0  # noqa: SLF001
+    assert [intent.quantity for intent in broker.protection_intents] == ["1.0", "2.0"]
+    assert [event["event_type"] for event in events].count("TRADE_OPENED") == 1
+
+
+def test_final_strategy_callback_receives_aggregate_partial_exit_pnl(monkeypatch):
+    class RecordingStrategy(_AlwaysLongStrategy):
+        def __init__(self):
+            self.closed = []
+
+        def on_close_position(self, trade_id, result):
+            self.closed.append((trade_id, result))
+
+    strategy = RecordingStrategy()
+    monkeypatch.setattr("koval.engine.live_engine.assemble_from_graph", lambda graph: strategy)
+    trades = []
+    engine = LiveEngine(
+        {"blocks": [], "connections": []},
+        LiveEngineConfig(symbol="BTCUSDT", timeframe="1m", initial_capital=10_000.0),
+        broker=_ImmediateFillBroker(),
+        on_trade=trades.append,
+    )
+    engine._pending_setup = _FakeSetup()  # noqa: SLF001
+    engine._last_entry_client_order_id = "kv-entry"  # noqa: SLF001
+    engine._on_open(  # noqa: SLF001
+        Fill(
+            "entry",
+            "buy",
+            100.0,
+            2.0,
+            0,
+            -0.08,
+            commission=0.08,
+            margin=200.0,
+        )
+    )
+
+    engine._apply_paper_fill(  # noqa: SLF001
+        Fill(
+            "stop_loss",
+            "buy",
+            90.0,
+            1.0,
+            60_000,
+            -10.04,
+            commission=0.04,
+            status="partial",
+        )
+    )
+    engine._apply_paper_fill(  # noqa: SLF001
+        Fill(
+            "stop_loss",
+            "buy",
+            90.0,
+            1.0,
+            120_000,
+            -10.04,
+            commission=0.04,
+        )
+    )
+
+    assert strategy.closed == [(1, {"pnl": pytest.approx(-20.16)})]
+    assert trades[0]["pnl"] == pytest.approx(-20.16)
+
+
+def test_partial_entry_resize_preserves_a_tightened_dynamic_stop(monkeypatch):
+    from decimal import Decimal
+
+    from koval.engine.paper_profile import resolve_paper_profile
+
+    class TighteningStrategy(_SingleEntryStrategy):
+        def __init__(self):
+            super().__init__(
+                entry_price=100.0,
+                stop_loss=90.0,
+                take_profit=150.0,
+                size=2.0,
+            )
+            self.tightened = False
+
+        def on_sl_update(self, trade_id):
+            if self.open_count and not self.tightened:
+                self.tightened = True
+                return 95.0
+            return None
+
+    class RecordingPaperBroker(PaperBroker):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.protection_stops = []
+
+        def place_protection(self, intent):
+            self.protection_stops.append(float(intent.stop_price))
+            return super().place_protection(intent)
+
+    strategy = TighteningStrategy()
+    monkeypatch.setattr("koval.engine.live_engine.assemble_from_graph", lambda graph: strategy)
+    execution = {
+        "version": "paper_ohlcv_realistic_v2",
+        "commission_bps": 0.0,
+        "spread_bps": 0.0,
+        "slippage_bps": 0.0,
+    }
+    profile = resolve_paper_profile(execution)
+    proxy = ExecutionProxyConfig(
+        maximum_volume_participation=Decimal("1"),
+        entry_remainder_policy="carry",
+        latency=ExecutionLatency(),
+    )
+    broker = RecordingPaperBroker(10_000, profile=profile, execution_proxy=proxy)
+    engine = LiveEngine(
+        {"blocks": [], "connections": []},
+        LiveEngineConfig(
+            symbol="BTCUSDT",
+            timeframe="1m",
+            initial_capital=10_000,
+            execution=execution,
+            execution_proxy=proxy,
+        ),
+        broker=broker,
+    )
+
+    engine.run(
+        ReplayFeed(
+            np.array(
+                [
+                    [0, 100, 101, 99, 100, 10],
+                    [60_000, 100, 101, 99, 100, 1],
+                    [120_000, 100, 101, 99, 100, 1],
+                ],
+                dtype=float,
+            )
+        ),
+        StopSignal(),
+    )
+
+    assert broker.protection_stops == [90.0, 95.0]
+
+
 def test_containment_drains_terminal_entry_delta_before_confirming_flatness(monkeypatch):
     monkeypatch.setattr(
         "koval.engine.live_engine.assemble_from_graph", lambda graph: _AlwaysLongStrategy()
@@ -1271,3 +1641,347 @@ def test_run_contains_unknown_entry_state_and_always_emits_session_end(monkeypat
         ("BTCUSDT", "session-1"),
     ]
     assert events[-1]["event_type"] == "SESSION_END"
+
+
+def _fixed_execution():
+    return {
+        "version": "paper_ohlcv_fixed_v1",
+        "commission_bps": 4.0,
+        "spread_bps": 20.0,
+        "slippage_bps": 10.0,
+    }
+
+
+def test_fixed_profile_trade_record_uses_actual_fills_and_net_pnl(monkeypatch):
+    strategy = _SingleEntryStrategy(entry_price=100.0, stop_loss=90.0, take_profit=120.0, size=2.0)
+    monkeypatch.setattr("koval.engine.live_engine.assemble_from_graph", lambda graph: strategy)
+    rows = np.array(
+        [
+            [0, 100, 101, 99, 100, 1],
+            [3_600_000, 100, 100.5, 99.5, 100, 1],
+            [7_200_000, 85, 86, 84, 85, 1],
+        ],
+        dtype=float,
+    )
+    trades, events = [], []
+    engine = LiveEngine(
+        {"blocks": [], "connections": []},
+        LiveEngineConfig(
+            symbol="BTCUSDT",
+            timeframe="1h",
+            initial_capital=10_000.0,
+            execution=_fixed_execution(),
+        ),
+        on_trade=trades.append,
+        on_event=events.append,
+    )
+    engine.run(_RawRowFeed(rows), StopSignal())
+    (trade,) = trades
+    assert trade["entry_price"] == pytest.approx(100.20)
+    assert trade["entry_reference_price"] == 100.0
+    assert trade["exit_price"] == pytest.approx(84.83)
+    assert trade["exit_reference_price"] == 85.0
+    assert trade["commission"] == pytest.approx(0.148024)
+    assert trade["gross_price_pnl"] == pytest.approx(-30.74)
+    assert trade["pnl"] == pytest.approx(-30.888024)
+    assert trade["exit_reason_text"] == "Stop Loss"
+    assert trade["execution_costs"]["spread_cost"] == pytest.approx(0.20 + 0.17)
+    assert trade["execution_profile"]["version"] == "paper_ohlcv_fixed_v1"
+    status = [e for e in events if e["event_type"] == "TRADE_CLOSED"][-1]
+    assert status["payload"]["entry_price"] == pytest.approx(100.20)
+
+
+def test_paper_insufficient_margin_emits_order_rejected_and_keeps_trading(monkeypatch):
+    strategy = _ConfiguredSetupStrategy(
+        entry_price=100.0, stop_loss=90.0, take_profit=108.0, size=600.0
+    )
+    monkeypatch.setattr("koval.engine.live_engine.assemble_from_graph", lambda graph: strategy)
+    rows = np.array([[0, 100, 101, 99, 100, 1], [3_600_000, 100, 100.5, 99.5, 100, 1]], dtype=float)
+    events, status = [], {}
+    engine = LiveEngine(
+        {"blocks": [], "connections": []},
+        LiveEngineConfig(
+            symbol="BTCUSDT",
+            timeframe="1h",
+            initial_capital=10_000.0,
+            execution={**_fixed_execution(), "leverage": 5.0},
+        ),
+        on_event=events.append,
+        on_status=status.update,
+    )
+    engine.run(_RawRowFeed(rows), StopSignal())
+    rejected = [e for e in events if e["event_type"] == "ORDER_REJECTED"]
+    assert len(rejected) == 2 and rejected[0]["payload"]["reason"] == "insufficient_margin"
+    assert status["entries_halted"] is False
+
+
+def test_paper_fill_time_insufficient_margin_emits_order_rejected(monkeypatch):
+    strategy = _SingleEntryStrategy(entry_price=100.0, stop_loss=90.0, take_profit=120.0, size=99.9)
+    monkeypatch.setattr("koval.engine.live_engine.assemble_from_graph", lambda g: strategy)
+    rows = np.array([[0, 100, 101, 99, 100, 1], [3_600_000, 100, 100.5, 99.5, 100, 1]], dtype=float)
+    events, trades, status = [], [], {}
+    engine = LiveEngine(
+        {"blocks": [], "connections": []},
+        LiveEngineConfig(
+            symbol="BTCUSDT",
+            timeframe="1h",
+            initial_capital=10_000.0,
+            execution=_fixed_execution(),
+        ),
+        on_event=events.append,
+        on_trade=trades.append,
+        on_status=status.update,
+    )
+    engine.run(_RawRowFeed(rows), StopSignal())
+    rejected = [e for e in events if e["event_type"] == "ORDER_REJECTED"]
+    assert len(rejected) == 1
+    assert rejected[0]["payload"]["reason"] == "insufficient_margin"
+    assert status["entries_halted"] is False
+    assert trades == []
+
+
+def test_paper_fill_time_rejection_preserves_non_margin_reason_code(monkeypatch):
+    monkeypatch.setattr(
+        "koval.engine.live_engine.assemble_from_graph", lambda graph: _AlwaysLongStrategy()
+    )
+    events = []
+    engine = LiveEngine(
+        {"blocks": [], "connections": []},
+        LiveEngineConfig(symbol="BTCUSDT", timeframe="1m", initial_capital=10_000.0),
+        broker=_ImmediateFillBroker(),
+        on_event=events.append,
+    )
+    engine._pending_setup = _FakeSetup()  # noqa: SLF001
+
+    engine._on_paper_entry_rejected(  # noqa: SLF001
+        "instrument_constraint: order is below the minimum quantity"
+    )
+
+    rejected = [event for event in events if event["event_type"] == "ORDER_REJECTED"]
+    assert rejected[0]["payload"]["reason"] == "instrument_constraint"
+
+
+def test_on_open_threads_real_margin_into_the_account_snapshot(monkeypatch):
+    strategy = _SingleEntryStrategy(
+        entry_price=100.0, stop_loss=90.0, take_profit=108.0, size=200.0
+    )
+    monkeypatch.setattr("koval.engine.live_engine.assemble_from_graph", lambda g: strategy)
+    rows = np.array(
+        [
+            [0, 100, 101, 99, 100, 1],
+            [3_600_000, 100, 100.5, 99.5, 100, 1],
+            [7_200_000, 100, 100.5, 99.5, 100, 1],
+        ],
+        dtype=float,
+    )
+    statuses = []
+    engine = LiveEngine(
+        {"blocks": [], "connections": []},
+        LiveEngineConfig(
+            symbol="BTCUSDT",
+            timeframe="1h",
+            initial_capital=10_000.0,
+            execution={**_fixed_execution(), "leverage": 5.0},
+        ),
+        on_status=lambda s: statuses.append(dict(s)),
+    )
+    engine.run(_RawRowFeed(rows), StopSignal())
+
+    open_statuses = [s for s in statuses if s["open_position"] is not None]
+    assert open_statuses, "expected at least one status while the position was open"
+    live = open_statuses[-1]
+    assert live["margin_used"] == pytest.approx(200 * 100.2 / 5, rel=1e-9)
+    assert live["free_margin"] == pytest.approx(
+        live["metrics"]["equity"] - live["margin_used"], rel=1e-6
+    )
+
+
+def test_non_paper_insufficient_margin_ack_halts_instead_of_soft_rejecting(monkeypatch):
+    """The soft 'keep trading' path for an affordability rejection is the paper
+    broker's alone. A sandbox ack carrying the same reason string must still
+    halt entries and raise an incident, not be swallowed as an event."""
+    monkeypatch.setattr(
+        "koval.engine.live_engine.assemble_from_graph", lambda graph: _AlwaysLongStrategy()
+    )
+
+    class SandboxRejectedBroker(_RecordingBroker):
+        def submit_entry(self, intent):
+            self.submitted.append(intent)
+            return BrokerOrderAck(
+                session_id=intent.session_id,
+                client_order_id=intent.client_order_id,
+                exchange_order_id=None,
+                status="rejected",
+                target=self.target,
+                metadata={"reason": "insufficient_margin"},
+            )
+
+    broker = SandboxRejectedBroker()
+    assert broker.target == "binance_sandbox"
+    incidents, events, statuses = [], [], []
+    eng = LiveEngine(
+        {"blocks": [], "connections": []},
+        LiveEngineConfig(symbol="BTCUSDT", timeframe="1m", initial_capital=10_000.0),
+        session_id="session-1",
+        broker=broker,
+        on_incident=incidents.append,
+        on_event=events.append,
+        on_status=statuses.append,
+    )
+
+    eng._process_bar(np.array([0, 100, 101, 99, 100, 1], dtype=float))  # noqa: SLF001
+    eng._process_bar(np.array([60_000, 100, 101, 99, 100, 1], dtype=float))  # noqa: SLF001
+
+    assert incidents[0]["type"] == "entry_rejected"
+    assert statuses[-1]["entries_halted"] is True
+    assert not [e for e in events if e["event_type"] == "ORDER_REJECTED"]
+
+
+class _DeferredEntryBroker(_RecordingBroker):
+    """Accepts a working entry, then delivers its fill only after ``arm()`` -
+    the way a limit/stop entry fills seconds after placement, between bar
+    closes. Confirms containment at finalize so ``run()`` completes cleanly."""
+
+    def __init__(self):
+        super().__init__()
+        self._queued = []
+        self._entry = None
+        self.protection_intents = []
+
+    def submit_entry(self, intent):
+        self.submitted.append(intent)
+        self._entry = BrokerFill(
+            session_id=intent.session_id,
+            client_order_id=intent.client_order_id,
+            exchange_order_id="e1",
+            symbol=intent.symbol,
+            side=intent.side,
+            status="filled",
+            role="entry",
+            quantity=intent.quantity,
+            price=intent.price,
+            timestamp_ms=0,
+        )
+        return BrokerOrderAck(
+            session_id=intent.session_id,
+            client_order_id=intent.client_order_id,
+            exchange_order_id="e1",
+            status="accepted",
+            target=self.target,
+        )
+
+    def arm(self):
+        if self._entry is not None:
+            self._queued.append(self._entry)
+            self._entry = None
+
+    def poll_fills(self, session_id):
+        out, self._queued = self._queued, []
+        return out
+
+    def place_protection(self, intent):
+        self.protection_intents.append(intent)
+        return _ImmediateFillBroker.place_protection(self, intent)
+
+    def cancel_all(self, symbol, session_id):
+        return [
+            BrokerOrderAck(
+                session_id=session_id,
+                client_order_id=f"cancel-{session_id}",
+                exchange_order_id=None,
+                status="canceled",
+                target=self.target,
+            )
+        ]
+
+    def flatten(self, symbol, session_id):
+        self._queued.append(
+            BrokerFill(
+                session_id=session_id,
+                client_order_id=f"flat-{session_id}",
+                exchange_order_id="f1",
+                symbol=symbol,
+                side="sell",
+                status="filled",
+                role="flatten",
+                quantity="1.0",
+                price="100.0",
+                timestamp_ms=0,
+                realized_pnl="0.0",
+            )
+        )
+        return BrokerOrderAck(
+            session_id=session_id,
+            client_order_id=f"flat-{session_id}",
+            exchange_order_id="f1",
+            status="filled",
+            target=self.target,
+        )
+
+
+def test_polling_feed_between_bars_hook_drives_watch_orders_to_protect_a_fill(monkeypatch):
+    """The CHANGELOG claims PollingFeed(between_bars=...) + LiveEngine.watch_orders()
+    protect a working entry within seconds of its fill. Prove the two compose:
+    the feed's between-bars hook, wired to watch_orders, delivers the entry fill
+    and places protection while only bar 0 has been processed - not on the next
+    bar close."""
+    from koval.engine.live_feed import PollingFeed
+
+    strategy = _SingleEntryStrategy(
+        entry_type="stop", entry_price=101.0, stop_loss=95.0, take_profit=110.0
+    )
+    monkeypatch.setattr("koval.engine.live_engine.assemble_from_graph", lambda g: strategy)
+
+    tf_ms = 60_000
+    candles = np.array(
+        [
+            [0, 100, 101, 99, 100, 1],
+            [tf_ms, 100, 101, 99, 100, 1],
+            [2 * tf_ms, 100, 101, 99, 100, 1],
+        ],
+        dtype=float,
+    )
+
+    class _Adapter:
+        def fetch_ohlcv(self, symbol, timeframe, start_ms, end_ms):
+            return candles
+
+    broker = _DeferredEntryBroker()
+    events = []
+    stop = StopSignal()
+    now = [tf_ms]  # bar 0 is closed; bar 1 is still forming
+    engine = LiveEngine(
+        {"blocks": [], "connections": []},
+        LiveEngineConfig(symbol="BTCUSDT", timeframe="1m", initial_capital=10_000.0),
+        session_id="s1",
+        broker=broker,
+        on_event=events.append,
+    )
+
+    seen = {"n": 0, "bar_index_at_protection": None}
+
+    def between_bars():
+        seen["n"] += 1
+        if seen["n"] == 1:
+            broker.arm()
+        engine.watch_orders()
+        if broker.protection_intents and seen["bar_index_at_protection"] is None:
+            seen["bar_index_at_protection"] = engine._bar_index  # noqa: SLF001
+            stop.set()
+
+    feed = PollingFeed(
+        _Adapter(),
+        symbol="BTCUSDT",
+        timeframe="1m",
+        clock=lambda: now[0],
+        poll_seconds=1.0,
+        between_bars=between_bars,
+        between_bars_seconds=0.001,
+    )
+
+    engine.run(feed, stop)
+
+    assert broker.submitted, "a working entry was placed on bar 0"
+    assert broker.protection_intents, "watch_orders placed protection between bars"
+    assert seen["bar_index_at_protection"] == 1, "protection came from the hook, not the bar loop"
+    assert any(e["event_type"] == "TRADE_OPENED" for e in events)

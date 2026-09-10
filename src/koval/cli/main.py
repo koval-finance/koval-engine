@@ -116,6 +116,13 @@ def _cmd_backtest(args: argparse.Namespace) -> int:
         )
         return 1
 
+    try:
+        adapter = get_exchange_adapter(args.exchange, exchange_type=args.exchange_type)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    market = adapter.capabilities().market
+
     if args.data:
         try:
             candles = load_csv_candles(Path(args.data))
@@ -129,8 +136,9 @@ def _cmd_backtest(args: argparse.Namespace) -> int:
         cache = OhlcvCache(root=Path(args.cache_dir))
         try:
             candles = cache.get(
-                get_exchange_adapter(args.exchange),
+                adapter,
                 exchange=args.exchange,
+                exchange_type=args.exchange_type,
                 symbol=args.symbol,
                 timeframe=args.timeframe,
                 start_ms=date_to_ms(args.start_date),
@@ -150,7 +158,7 @@ def _cmd_backtest(args: argparse.Namespace) -> int:
         graph=graph,
         feeds={args.timeframe: candles},
         initial_capital=args.capital,
-        execution_config={"exchange": args.exchange, "exchange_type": "future"},
+        execution_config={"exchange": args.exchange, "exchange_type": market},
     )
     override = os.getenv("KOVAL_BACKTEST_ENGINE")
     try:
@@ -224,6 +232,13 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     backtest.add_argument("--capital", type=float, default=10_000.0, help="initial capital")
     backtest.add_argument("--exchange", default="binance", help="venue used for the fee model")
+    backtest.add_argument(
+        "--exchange-type",
+        choices=["spot", "future"],
+        default=None,
+        help="venue market; defaults to the adapter's native market "
+        "(binance: future, whitebit: spot)",
+    )
     backtest.add_argument("--json", action="store_true", help="emit machine-readable JSON")
     backtest.set_defaults(handler=_cmd_backtest)
 

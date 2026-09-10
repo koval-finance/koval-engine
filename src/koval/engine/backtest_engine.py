@@ -38,6 +38,8 @@ class EngineRunSpec:
     initial_capital: float
     execution_config: dict[str, Any] | None = None
     protocol_version: int = ENGINE_PROTOCOL_VERSION
+    execution_contract_version: int = 1
+    required_execution_capabilities: tuple[str, ...] = ()
 
 
 @dataclass
@@ -47,6 +49,20 @@ class BacktestResult:
     metrics: dict[str, Any] = field(default_factory=dict)
     trades: list[dict[str, Any]] = field(default_factory=list)
     equity_curve: list[dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class ExecutionCapabilities:
+    """Versioned evidence/execution features advertised by a runtime plugin."""
+
+    execution_contract_versions: tuple[int, ...]
+    features: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class NegotiatedExecutionCapabilities:
+    execution_contract_version: int
+    features: tuple[str, ...]
 
 
 class BacktestEngineProtocol(Protocol):
@@ -69,6 +85,28 @@ def check_protocol_version(spec: EngineRunSpec) -> None:
             f"spec protocol_version={spec.protocol_version} unsupported; "
             f"engine speaks {ENGINE_PROTOCOL_VERSION}"
         )
+
+
+def negotiate_execution_capabilities(
+    spec: EngineRunSpec,
+    offered: ExecutionCapabilities,
+) -> NegotiatedExecutionCapabilities:
+    """Fail closed when a plugin cannot honor requested execution evidence."""
+    requested_version = int(spec.execution_contract_version)
+    if requested_version not in offered.execution_contract_versions:
+        raise ProtocolVersionError(
+            f"execution contract v{requested_version} is not offered by the engine"
+        )
+    required = tuple(dict.fromkeys(spec.required_execution_capabilities))
+    missing = sorted(set(required) - set(offered.features))
+    if missing:
+        raise ProtocolVersionError(
+            "engine is missing required execution capabilities: " + ", ".join(missing)
+        )
+    return NegotiatedExecutionCapabilities(
+        execution_contract_version=requested_version,
+        features=required,
+    )
 
 
 class NoBacktestEngineError(RuntimeError):

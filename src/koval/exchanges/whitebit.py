@@ -7,6 +7,7 @@ endpoints are not implemented.
 
 from __future__ import annotations
 
+from decimal import Decimal
 from typing import Any, Final
 
 import numpy as np
@@ -21,10 +22,17 @@ from koval.exchanges.base import (
     timeframe_ms,
     validate_transport_settings,
 )
+from koval.exchanges.capabilities import VenueCapabilities
 
 _BASE_URL: Final = "https://whitebit.com"
 _KLINE_PATH: Final = "/api/v1/public/kline"
 _MAX_LIMIT: Final = 1440
+_FUNDING_LIMIT: Final = 100
+_MARKETS: Final[frozenset[str]] = frozenset({"spot", "future"})
+# Quote suffixes stripped from a separator-less pair (e.g. ``BTCUSDT``) to
+# recover the base asset for a ``<BASE>_PERP`` futures symbol. Longest first so
+# ``USDT``/``USDC`` win over ``USD``; ``PERP`` keeps the translation idempotent.
+_FUTURES_QUOTE_SUFFIXES: Final[tuple[str, ...]] = ("PERP", "USDT", "USDC", "USD")
 
 _INTERVAL_MAP: Final[dict[str, str]] = {
     "1m": "1m",
@@ -40,6 +48,7 @@ class WhiteBITAdapter(ExchangeAdapter):
     def __init__(
         self,
         *,
+        market: str = "spot",
         session: requests.Session | None = None,
         timeout: float = 10.0,
         page_limit: int = _MAX_LIMIT,
@@ -52,6 +61,9 @@ class WhiteBITAdapter(ExchangeAdapter):
             max_retries=max_retries,
             retry_backoff_seconds=retry_backoff_seconds,
         )
+        if market not in _MARKETS:
+            raise ValueError(f"unsupported WhiteBIT market: {market!r}")
+        self._market = market
         self.base_url = _BASE_URL
         self._session = session or requests.Session()
         self._timeout = timeout
@@ -70,7 +82,7 @@ class WhiteBITAdapter(ExchangeAdapter):
             return np.empty((0, len(OHLCV_COLUMNS)), dtype=np.float64)
         step_s = timeframe_ms(timeframe) // 1000
         params_base = {
-            "market": self._normalize_symbol(symbol),
+            "market": self._market_symbol(symbol),
             "interval": self._interval(timeframe),
             "limit": self._page_limit,
         }
@@ -108,6 +120,71 @@ class WhiteBITAdapter(ExchangeAdapter):
             end_ms=end_ms,
         )
 
+    def fetch_funding_history(self, symbol: str, start_ms: int, end_ms: int):
+        from koval.engine.funding import (
+            FundingRecord,
+            FundingUnavailableError,
+            build_funding_series,
+        )
+
+        if self._market != "future":
+            raise FundingUnavailableError("WhiteBIT spot has no perpetual funding")
+        raw_pages: list[object] = []
+        rows: list[dict[str, object]] = []
+        offset = 0
+        while True:
+            response = get_with_retries(
+                self._session,
+                f"{self.base_url}/api/v4/public/funding-history/{self._market_symbol(symbol)}",
+                params={
+                    "startDate": int(start_ms) // 1000,
+                    "endDate": int(end_ms) // 1000,
+                    "limit": _FUNDING_LIMIT,
+                    "offset": offset,
+                },
+                timeout=self._timeout,
+                max_retries=self._max_retries,
+                backoff_seconds=self._retry_backoff_seconds,
+            )
+            response.raise_for_status()
+            raw = response.json()
+            if not isinstance(raw, list):
+                raise ValueError("WhiteBIT funding history response must be a list")
+            raw_pages.append(raw)
+            page = [item for item in raw if isinstance(item, dict)]
+            rows.extend(page)
+            if len(raw) < _FUNDING_LIMIT:
+                break
+            offset += len(raw)
+        timestamps = sorted(int(item["fundingTime"]) * 1000 for item in rows)
+        if len(timestamps) > 1:
+            interval = timestamps[1] - timestamps[0]
+        elif rows:
+            interval = (int(rows[0]["fundingTime"]) - int(rows[0]["rateCalculatedTime"])) * 1000
+        else:
+            interval = 0
+        records = [
+            FundingRecord(
+                symbol=str(item["market"]),
+                rate=Decimal(str(item["fundingRate"])),
+                settlement_timestamp_ms=int(item["fundingTime"]) * 1000,
+                settlement_mark_price=Decimal(str(item["settlementPrice"])),
+                interval_ms=interval,
+                source="whitebit_v4_funding_history",
+                rate_calculated_timestamp_ms=int(item["rateCalculatedTime"]) * 1000,
+            )
+            for item in rows
+        ]
+        return build_funding_series(
+            records,
+            exchange="whitebit",
+            market="future",
+            symbol=symbol,
+            requested_start_ms=start_ms,
+            requested_end_ms=end_ms,
+            raw_responses=tuple(raw_pages),
+        )
+
     @staticmethod
     def _rows_to_ndarray(raw: list[list]) -> np.ndarray:
         # Source columns:  [time_s, open, close, high, low, volume, quote_volume]
@@ -122,12 +199,54 @@ class WhiteBITAdapter(ExchangeAdapter):
             out[i, 5] = float(row[5])  # volume
         return out
 
+    def capabilities(self) -> VenueCapabilities:
+        return VenueCapabilities(
+            exchange="whitebit",
+            market=self._market,
+            data_environment="production",
+            # No verified non-money WhiteBIT endpoint exists, so execution
+            # stays fail-closed regardless of the market.
+            sandbox_execution=False,
+            entry_order_types=(),
+            take_profit_order_type="unavailable",
+            fee_schedule="current_snapshot",
+            funding_history="historical" if self._market == "future" else "unavailable",
+            symbol_spec="current_snapshot",
+            symbol_format="BTC_PERP" if self._market == "future" else "BTC_USDT",
+        )
+
     def metadata(self) -> dict[str, Any]:
+        symbols = (
+            ["BTC_PERP", "ETH_PERP", "SOL_PERP"]
+            if self._market == "future"
+            else ["BTC_USDT", "ETH_USDT", "SOL_USDT"]
+        )
         return {
             "name": "whitebit",
-            "symbols": ["BTC_USDT", "ETH_USDT", "SOL_USDT"],
+            "symbols": symbols,
             "timeframes": list(TIMEFRAMES),
         }
+
+    def _market_symbol(self, symbol: str) -> str:
+        """Map a canonical pair onto the market's own symbol spelling.
+
+        Spot keeps the ``<BASE>_<QUOTE>`` form. Futures always use ``<BASE>_PERP``:
+        a separator-less pair such as ``BTCUSDT`` has its quote suffix stripped
+        rather than being sent to the venue verbatim, and an unparseable symbol
+        raises instead of querying the wrong market.
+        """
+        normalized = self._normalize_symbol(symbol)
+        if self._market != "future":
+            return normalized
+        if "_" in normalized:
+            return f"{normalized.partition('_')[0]}_PERP"
+        for suffix in _FUTURES_QUOTE_SUFFIXES:
+            if normalized.endswith(suffix) and len(normalized) > len(suffix):
+                return f"{normalized[: -len(suffix)]}_PERP"
+        raise ValueError(
+            f"cannot resolve WhiteBIT futures symbol from {symbol!r}: "
+            "use '<BASE>_PERP', '<BASE>/<QUOTE>' or '<BASE><QUOTE>'"
+        )
 
     @staticmethod
     def _normalize_symbol(symbol: str) -> str:

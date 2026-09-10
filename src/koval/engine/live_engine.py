@@ -11,7 +11,7 @@ import datetime as _dt
 import math
 import uuid
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 
@@ -25,14 +25,19 @@ from koval.engine.broker import (
 )
 from koval.engine.client_order_id import make_client_order_id
 from koval.engine.engine_events import EngineEvent, EventType
+from koval.engine.execution_proxy import ExecutionProxyConfig
+from koval.engine.fee_evidence import FeeScheduleEvidence
+from koval.engine.funding import FundingSeries
+from koval.engine.higher_timeframe import confirmed_higher_timeframe_bars
+from koval.engine.history_window import DEFAULT_HISTORY_BARS
+from koval.engine.instrument_risk import InstrumentSpecEvidence, MarkPriceSeries
 from koval.engine.live_feed import LiveFeed, StopSignal
 from koval.engine.paper_broker import Fill, PaperBroker
+from koval.engine.paper_profile import resolve_paper_profile
 from koval.exchanges.auth import safe_exception_message
 from koval.exchanges.base import timeframe_ms
 from koval.strategy.base.trade_setup import TradeSetup
 from koval.strategy.block_assembler import assemble_from_graph
-
-_DEFAULT_MAX_WINDOW = 2000
 
 
 @dataclass
@@ -41,7 +46,18 @@ class LiveEngineConfig:
     timeframe: str
     initial_capital: float
     history: np.ndarray | None = None
-    max_window: int = _DEFAULT_MAX_WINDOW
+    max_window: int = DEFAULT_HISTORY_BARS
+    execution: dict | None = None
+    higher_timeframe: str | None = None
+    requires_higher_timeframe: bool = False
+    market: str = "future"
+    funding: FundingSeries | None = None
+    fee_schedule: FeeScheduleEvidence | None = None
+    instrument_specs: tuple[InstrumentSpecEvidence, ...] = ()
+    mark_prices: MarkPriceSeries | None = None
+    execution_proxy: ExecutionProxyConfig | None = None
+    daily_baseline_equity: float | None = None
+    peak_equity: float | None = None
 
 
 def _noop(_x: object) -> None:
@@ -100,6 +116,16 @@ def _broker_fill_to_dict(fill: BrokerFill) -> dict:
     }
 
 
+def _venue_commission(fill: BrokerFill) -> float:
+    """The quote-asset commission a venue reported, or 0 when it is unconverted."""
+    if fill.metadata.get("commission_unconverted"):
+        return 0.0
+    try:
+        return float(fill.metadata.get("commission") or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def _broker_fill_to_paper_fill(fill: BrokerFill) -> Fill | None:
     if fill.quantity is None or fill.price is None:
         return None
@@ -110,6 +136,8 @@ def _broker_fill_to_paper_fill(fill: BrokerFill) -> Fill | None:
         quantity=float(fill.quantity),
         timestamp_ms=fill.timestamp_ms,
         realized_pnl=float(fill.realized_pnl or 0.0),
+        commission=_venue_commission(fill),
+        reference_price=float(fill.price),
     )
 
 
@@ -171,6 +199,15 @@ def _validate_live_config(config: LiveEngineConfig) -> None:
         or config.max_window <= 0
     ):
         raise ValueError("live engine max_window must be a positive integer")
+    if config.higher_timeframe is not None:
+        primary_ms = timeframe_ms(config.timeframe)
+        higher_ms = timeframe_ms(config.higher_timeframe)
+        if higher_ms <= primary_ms or higher_ms % primary_ms:
+            raise ValueError(
+                "live engine higher_timeframe must be a larger integer multiple of timeframe"
+            )
+    if config.requires_higher_timeframe and config.higher_timeframe is None:
+        raise ValueError("live engine graph requires a configured higher_timeframe")
 
 
 def _validate_live_setup(setup: TradeSetup, *, expected_direction: str) -> None:
@@ -270,8 +307,27 @@ class LiveEngine:
         self._strategy.config = {"symbol": config.symbol}
         self._config = config
         self._session_id = session_id or uuid.uuid4().hex
-        self._broker = broker or PaperBroker(config.initial_capital)
-        self._account = PlatformAccountState(starting_balance=config.initial_capital)
+        self._profile = resolve_paper_profile(config.execution)
+        self._broker = broker or PaperBroker(
+            config.initial_capital,
+            profile=self._profile,
+            market=config.market,
+            funding=config.funding,
+            fee_schedule=config.fee_schedule,
+            instrument_specs=config.instrument_specs,
+            mark_prices=config.mark_prices,
+            execution_proxy=config.execution_proxy,
+        )
+        broker_ledger = (
+            getattr(self._broker, "ledger", None) if self._broker.target == "paper" else None
+        )
+        self._uses_broker_ledger = broker_ledger is not None
+        self._account = PlatformAccountState(
+            starting_balance=config.initial_capital,
+            daily_baseline_equity=config.daily_baseline_equity,
+            peak_equity=config.peak_equity,
+            ledger=broker_ledger,
+        )
         self._window = _Window(max_len=config.max_window)
         if config.history is not None:
             try:
@@ -303,6 +359,12 @@ class LiveEngine:
         self._pending_setup: TradeSetup | None = None
         self._open_setup: TradeSetup | None = None
         self._open_entry_ts: int = 0
+        self._open_entry_fill: Fill | None = None
+        self._partial_exit_realized_pnl = 0.0
+        self._partial_exit_commission = 0.0
+        self._partial_exit_quantity = 0.0
+        self._partial_exit_notional = 0.0
+        self._higher_timeframe_available = False
         self._last_entry_client_order_id = ""
         self._entries_halted = False
         self._broker_entries_halted = False
@@ -311,8 +373,38 @@ class LiveEngine:
         self._containment_in_progress = False
         self._containment_confirmed: bool | None = None
 
+    @property
+    def profile(self):
+        return self._profile
+
+    @property
+    def history_tail_ms(self) -> int | None:
+        """Opening timestamp of the last preloaded bar, or None when there is none.
+
+        A polling feed resumes from here so the session continues after the
+        history it warmed up on instead of replaying it.
+        """
+        return self._window.ts[-1] if self._window.ts else None
+
     def run(self, feed: LiveFeed, stop: StopSignal) -> None:
-        self._emit(EventType.SESSION_START, {"symbol": self._config.symbol})
+        self._emit(
+            EventType.SESSION_START,
+            {
+                "symbol": self._config.symbol,
+                "warmup_range": {
+                    "start_ms": self._window.ts[0] if self._window.ts else None,
+                    "end_ms": self._window.ts[-1] if self._window.ts else None,
+                    "bars": len(self._window.ts),
+                },
+                "timeframes": {
+                    "primary": self._config.timeframe,
+                    "higher": self._config.higher_timeframe,
+                    "higher_status": (
+                        "configured" if self._config.higher_timeframe else "unavailable"
+                    ),
+                },
+            },
+        )
         try:
             try:
                 for row in feed.bars(stop):
@@ -349,15 +441,18 @@ class LiveEngine:
         self._window.append(row)
         process_bar = getattr(self._broker, "process_bar", None)
         paper_fills = (
-            process_bar(ts_ms=ts, open=o, high=h, low=low, close=c)
+            process_bar(ts_ms=ts, open=o, high=h, low=low, close=c, volume=v)
             if process_bar is not None
             else []
         )
         for fill in paper_fills:
-            if fill.kind == "entry":
-                self._on_open(fill)
-            else:
-                self._on_close(fill)
+            self._apply_paper_fill(fill)
+        consume_rejection = getattr(self._broker, "consume_entry_rejection", None)
+        entry_rejected = False
+        rejection = consume_rejection() if consume_rejection is not None else None
+        if rejection is not None:
+            self._on_paper_entry_rejected(rejection)
+            entry_rejected = True
         self._poll_broker_fills()
         self._account.on_bar(equity=self._broker_equity(), timestamp_ms=ts)
         self._inject_state(ts, o, h, low, c, v)
@@ -378,9 +473,11 @@ class LiveEngine:
             entry_canceled = True
         if (
             not entry_canceled
+            and not entry_rejected
             and self._broker_position() is None
             and not self._broker_pending()
             and not self._broker_entries_halted
+            and (not self._config.requires_higher_timeframe or self._higher_timeframe_available)
         ):
             self._try_enter(ts, c)
         elif self._broker_position() is not None:
@@ -398,6 +495,7 @@ class LiveEngine:
                 if ack is not None and ack.status not in {"accepted", "filled"}:
                     self._contain_exposure("dynamic_stop_rejected")
                     raise RuntimeError("broker rejected the dynamic protection update")
+                self._account.on_stop_update(new_sl)
         self._emit_bar(ts, o, h, low, c)
         self._emit_status()
 
@@ -432,6 +530,11 @@ class LiveEngine:
             stop_price=str(setup.stop_loss),
             target_price=str(setup.take_profit),
             target=self._broker.target,
+            metadata={
+                "risk_budget": abs(float(setup.entry_price) - float(setup.stop_loss))
+                * float(setup.size),
+                "decision_timestamp_ms": ts + timeframe_ms(self._config.timeframe),
+            },
         )
         self._on_order_intent(_intent_to_dict(intent))
         self._pending_setup = setup
@@ -443,6 +546,28 @@ class LiveEngine:
             self._contain_exposure("entry_state_unknown")
             raise
         self._on_order_ack({**_ack_to_dict(ack), "intent_id": intent.intent_id})
+        if (
+            self._broker.target == "paper"
+            and ack.status == "rejected"
+            and ack.metadata.get("reason") == "insufficient_margin"
+        ):
+            # An affordability rejection is an event, not a session halt: the
+            # strategy keeps running and may size a smaller entry later. This
+            # soft path is the paper broker's alone; any other broker's
+            # rejection falls through to the halt below.
+            self._external_entry_pending = False
+            self._pending_setup = None
+            self._emit(
+                EventType.ORDER_REJECTED,
+                {
+                    "direction": setup.direction,
+                    "entry_type": setup.entry_type,
+                    "size": setup.size,
+                    "price": setup.entry_price,
+                    "reason": "insufficient_margin",
+                },
+            )
+            return
         if ack.status not in {"accepted", "filled"}:
             self._external_entry_pending = False
             self._pending_setup = None
@@ -485,11 +610,43 @@ class LiveEngine:
             self._on_open(fill)
             self._poll_broker_fills()
 
+    def watch_orders(self) -> None:
+        """Poll the broker between bars so a limit or stop entry is protected
+        within seconds of its fill rather than at the next bar close.
+
+        Wire it into a live session by passing it as the polling feed's
+        between-bars hook: ``PollingFeed(adapter, ..., between_bars=engine.watch_orders)``.
+        A no-op for the paper broker, whose fills are resolved bar-by-bar."""
+        if self._broker.target == "paper":
+            return
+        try:
+            self._poll_broker_fills()
+        except Exception:
+            self._contain_exposure("order_watch_failed")
+            raise
+
     def _poll_broker_fills(self) -> None:
         for fill in self._broker.poll_fills(self._session_id):
             self._on_fill(_broker_fill_to_dict(fill))
             if self._broker.target != "paper":
                 self._process_external_fill(fill)
+
+    def _on_paper_entry_rejected(self, detail: str) -> None:
+        """Report a stable fill-time rejection reason and keep the session live."""
+        setup = self._pending_setup
+        self._external_entry_pending = False
+        self._pending_setup = None
+        reason = str(detail).partition(":")[0].strip() or "paper_entry_rejected"
+        self._emit(
+            EventType.ORDER_REJECTED,
+            {
+                "direction": setup.direction if setup is not None else None,
+                "entry_type": setup.entry_type if setup is not None else None,
+                "size": setup.size if setup is not None else None,
+                "price": setup.entry_price if setup is not None else None,
+                "reason": reason,
+            },
+        )
 
     def _on_open(self, fill: Fill) -> None:
         self._external_entry_pending = False
@@ -497,6 +654,7 @@ class LiveEngine:
         setup = self._pending_setup
         self._open_setup = setup
         self._open_entry_ts = fill.timestamp_ms
+        self._open_entry_fill = fill
         self._pending_setup = None
         if setup is not None:
             try:
@@ -523,8 +681,14 @@ class LiveEngine:
                 entry_price=fill.price,
                 quantity=fill.quantity,
                 current_stop=setup.stop_loss,
-                margin=0.0,
+                margin=fill.margin or float(getattr(self._broker, "margin_used", 0.0)),
             )
+            if fill.commission and not self._uses_broker_ledger:
+                self._account.on_fee(
+                    fill.commission,
+                    timestamp_ms=fill.timestamp_ms,
+                    reference_id=self._last_entry_client_order_id,
+                )
             self._place_protection(setup, fill)
         self._emit(
             EventType.TRADE_OPENED,
@@ -535,6 +699,81 @@ class LiveEngine:
                 "why_entry": list(setup.why_entry) if setup else [],
             },
         )
+
+    def _apply_paper_fill(self, fill: Fill) -> None:
+        """Apply one paper fill delta without treating a partial as terminal."""
+        if fill.kind == "entry":
+            if self._account.snapshot().open_position is None:
+                self._on_open(fill)
+            else:
+                self._on_entry_fill_delta(fill)
+            return
+        if fill.status == "partial":
+            self._on_partial_close(fill)
+        else:
+            self._on_close(fill)
+
+    def _on_entry_fill_delta(self, fill: Fill) -> None:
+        setup = self._open_setup
+        current = self._open_entry_fill
+        if setup is None or current is None:
+            raise RuntimeError("additional entry fill has no open setup to resize")
+        _validate_fill_against_protection(setup, fill)
+        total_quantity = current.quantity + fill.quantity
+        average_price = (
+            current.price * current.quantity + fill.price * fill.quantity
+        ) / total_quantity
+        aggregate = replace(
+            current,
+            price=average_price,
+            quantity=total_quantity,
+            realized_pnl=current.realized_pnl + fill.realized_pnl,
+            commission=current.commission + fill.commission,
+            spread_cost=current.spread_cost + fill.spread_cost,
+            slippage_cost=current.slippage_cost + fill.slippage_cost,
+            margin=current.margin + fill.margin,
+            status=fill.status,
+            cumulative_quantity=fill.cumulative_quantity,
+        )
+        self._open_entry_fill = aggregate
+        self._account.on_entry_fill(
+            entry_price=fill.price,
+            quantity=fill.quantity,
+            margin=fill.margin,
+        )
+        if fill.commission and not self._uses_broker_ledger:
+            self._account.on_fee(
+                fill.commission,
+                timestamp_ms=fill.timestamp_ms,
+                reference_id=self._last_entry_client_order_id,
+            )
+        broker_position = getattr(self._broker, "position", None)
+        self._place_protection(
+            setup,
+            aggregate,
+            stop_price=getattr(broker_position, "stop_price", setup.stop_loss),
+            target_price=getattr(broker_position, "target_price", setup.take_profit),
+        )
+
+    def _on_partial_close(self, fill: Fill) -> None:
+        gross = fill.realized_pnl + fill.commission
+        self._account.on_partial_close(
+            quantity=fill.quantity,
+            realized_pnl=gross,
+            timestamp_ms=fill.timestamp_ms,
+            reference_id=self._last_entry_client_order_id,
+            record_ledger=not self._uses_broker_ledger,
+        )
+        if fill.commission and not self._uses_broker_ledger:
+            self._account.on_fee(
+                fill.commission,
+                timestamp_ms=fill.timestamp_ms,
+                reference_id=self._last_entry_client_order_id,
+            )
+        self._partial_exit_realized_pnl += fill.realized_pnl
+        self._partial_exit_commission += fill.commission
+        self._partial_exit_quantity += fill.quantity
+        self._partial_exit_notional += fill.price * fill.quantity
 
     def _process_external_fill(self, fill: BrokerFill) -> None:
         if fill.role == "entry":
@@ -630,9 +869,18 @@ class LiveEngine:
             quantity=quantity,
             timestamp_ms=fill.timestamp_ms,
             realized_pnl=float(realized_pnl or 0.0),
+            commission=_venue_commission(fill),
+            reference_price=price,
         )
 
-    def _place_protection(self, setup: TradeSetup, fill: Fill) -> None:
+    def _place_protection(
+        self,
+        setup: TradeSetup,
+        fill: Fill,
+        *,
+        stop_price: float | None = None,
+        target_price: float | None = None,
+    ) -> None:
         stop_client_order_id = make_client_order_id(
             self._session_id,
             f"protect-{self._trade_id}",
@@ -653,8 +901,8 @@ class LiveEngine:
             symbol=self._config.symbol,
             side=fill.side,
             quantity=str(fill.quantity),
-            stop_price=str(setup.stop_loss),
-            target_price=str(setup.take_profit),
+            stop_price=str(setup.stop_loss if stop_price is None else stop_price),
+            target_price=str(setup.take_profit if target_price is None else target_price),
             target=self._broker.target,
         )
         self._on_audit(
@@ -714,14 +962,36 @@ class LiveEngine:
         )
 
     def _on_close(self, fill: Fill) -> None:
-        self._strategy.on_close_position(self._trade_id, {"pnl": fill.realized_pnl})
-        self._account.on_close(realized_pnl=fill.realized_pnl)
         record = self._trade_record(self._open_setup, fill)
+        self._strategy.on_close_position(self._trade_id, {"pnl": record["pnl"]})
+        self._account.on_close(
+            realized_pnl=fill.realized_pnl + fill.commission + fill.liquidation_fee,
+            timestamp_ms=fill.timestamp_ms,
+            reference_id=self._last_entry_client_order_id,
+            record_ledger=not self._uses_broker_ledger,
+        )
+        if fill.commission and not self._uses_broker_ledger:
+            self._account.on_fee(
+                fill.commission,
+                timestamp_ms=fill.timestamp_ms,
+                reference_id=self._last_entry_client_order_id,
+            )
+        if fill.liquidation_fee and not self._uses_broker_ledger:
+            self._account.on_liquidation_fee(
+                fill.liquidation_fee,
+                timestamp_ms=fill.timestamp_ms,
+                reference_id=self._last_entry_client_order_id,
+            )
         self._open_setup = None
+        self._open_entry_fill = None
+        self._partial_exit_realized_pnl = 0.0
+        self._partial_exit_commission = 0.0
+        self._partial_exit_quantity = 0.0
+        self._partial_exit_notional = 0.0
         self._emit(
             EventType.TRADE_CLOSED,
             {
-                "pnl": fill.realized_pnl,
+                "pnl": record["pnl"],
                 "exit_price": fill.price,
                 "exit_reason": record["reason"],
                 "entry_price": record["entry_price"],
@@ -732,22 +1002,62 @@ class LiveEngine:
 
     def _trade_record(self, setup: TradeSetup | None, fill: Fill) -> dict:
         direction = "long" if fill.side == "buy" else "short"
-        reason = {"stop_loss": "sl", "take_profit": "tp", "manual_close": "manual"}.get(
-            fill.kind, "other"
+        reason = {
+            "stop_loss": "sl",
+            "take_profit": "tp",
+            "manual_close": "manual",
+            "liquidation": "liquidation",
+        }.get(fill.kind, "other")
+        # The record reports what actually filled, never the setup's request.
+        entry = self._open_entry_fill
+        entry_price = (
+            entry.price if entry is not None else (setup.entry_price if setup else fill.price)
         )
-        entry_price = setup.entry_price if setup else fill.price
+        entry_commission = entry.commission if entry is not None else 0.0
+        exit_quantity = self._partial_exit_quantity + fill.quantity
+        exit_price = (
+            (self._partial_exit_notional + fill.price * fill.quantity) / exit_quantity
+            if exit_quantity
+            else fill.price
+        )
+        exit_commission = self._partial_exit_commission + fill.commission
+        exit_realized = self._partial_exit_realized_pnl + fill.realized_pnl
+        sign = 1.0 if fill.side == "buy" else -1.0
+        gross = (exit_price - entry_price) * exit_quantity * sign
+        net = exit_realized - entry_commission
         return {
             "entry_time": _iso(self._open_entry_ts),
             "exit_time": _iso(fill.timestamp_ms),
             "direction": direction,
             "entry_price": entry_price,
-            "exit_price": fill.price,
-            "size": fill.quantity,
-            "pnl": fill.realized_pnl,
-            "pnl_pct": (fill.realized_pnl / (entry_price * fill.quantity) * 100.0)
-            if entry_price and fill.quantity
+            "entry_reference_price": entry.reference_price if entry is not None else None,
+            "exit_price": exit_price,
+            "exit_reference_price": fill.reference_price,
+            "size": exit_quantity,
+            "pnl": net,
+            "gross_price_pnl": gross,
+            "commission": entry_commission + exit_commission,
+            "liquidation_fee": fill.liquidation_fee,
+            "execution_costs": {
+                "spread_cost": (entry.spread_cost if entry is not None else 0.0) + fill.spread_cost,
+                "slippage_cost": (entry.slippage_cost if entry is not None else 0.0)
+                + fill.slippage_cost,
+                "commission": entry_commission + exit_commission,
+                "liquidation_fee": fill.liquidation_fee,
+            },
+            "pnl_pct": (net / (entry_price * exit_quantity) * 100.0)
+            if entry_price and exit_quantity
             else 0.0,
             "reason": reason,
+            "exit_reason_text": {
+                "stop_loss": "Stop Loss",
+                "take_profit": "Take Profit",
+                "manual_close": "Session stop",
+                "liquidation": "Liquidation",
+            }.get(fill.kind, "Other"),
+            "execution_profile": getattr(
+                self._broker, "resolved_metadata", self._profile.as_config()
+            ),
         }
 
     def _finalize(self, *, require_confirmation: bool = True) -> None:
@@ -885,7 +1195,36 @@ class LiveEngine:
         s.lows = np.array(self._window.low, dtype=float)
         s.opens = np.array(self._window.o, dtype=float)
         s.volumes = np.array(self._window.v, dtype=float)
-        s.htf_closes = s.htf_highs = s.htf_lows = s.htf_opens = s.htf_volumes = None
+        if self._config.higher_timeframe is None:
+            self._higher_timeframe_available = False
+            s.htf_closes = s.htf_highs = s.htf_lows = s.htf_opens = s.htf_volumes = None
+        else:
+            source = np.column_stack(
+                (
+                    self._window.ts,
+                    self._window.o,
+                    self._window.h,
+                    self._window.low,
+                    self._window.c,
+                    self._window.v,
+                )
+            )
+            higher = confirmed_higher_timeframe_bars(
+                source,
+                source_timeframe=self._config.timeframe,
+                target_timeframe=self._config.higher_timeframe,
+                decision_time_ms=ts + timeframe_ms(self._config.timeframe),
+            )
+            if higher.size == 0:
+                self._higher_timeframe_available = False
+                s.htf_closes = s.htf_highs = s.htf_lows = s.htf_opens = s.htf_volumes = None
+            else:
+                self._higher_timeframe_available = True
+                s.htf_opens = higher[:, 1].copy()
+                s.htf_highs = higher[:, 2].copy()
+                s.htf_lows = higher[:, 3].copy()
+                s.htf_closes = higher[:, 4].copy()
+                s.htf_volumes = higher[:, 5].copy()
         s.account_value = self._broker_equity()
         pos = self._broker_position()
         s.position_size = float(pos.quantity) if pos else 0.0
@@ -933,7 +1272,11 @@ class LiveEngine:
                     "realized_pnl": snap.realized_pnl,
                     "unrealized_pnl": snap.unrealized_pnl,
                     "daily_pnl": snap.daily_pnl,
+                    "daily_loss_pct": snap.daily_loss_pct,
                     "drawdown_pct": snap.drawdown_pct,
+                    "fees": snap.fees,
+                    "funding": snap.funding,
+                    "trade_realized_pnl": snap.trade_realized_pnl,
                 },
                 "open_position": None
                 if pos is None
@@ -949,6 +1292,16 @@ class LiveEngine:
                     ),
                 },
                 "bars_processed": self._bar_index,
+                "execution_profile": getattr(
+                    self._broker, "resolved_metadata", self._profile.as_config()
+                ),
+                "margin_used": snap.margin_used,
+                "free_margin": snap.free_margin,
+                "higher_timeframe": {
+                    "configured": self._config.higher_timeframe,
+                    "required": self._config.requires_higher_timeframe,
+                    "available": self._higher_timeframe_available,
+                },
                 "containment_attempted": self._containment_attempted,
                 "containment_confirmed": self._containment_confirmed,
                 "terminal": terminal,

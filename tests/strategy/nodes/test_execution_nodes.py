@@ -176,11 +176,11 @@ def _pf_order():
     )
 
 
-def test_portfolio_risk_gate_locks_out_on_drawdown():
+def test_portfolio_risk_gate_locks_out_on_daily_loss():
     spec = get_node("exec.portfolio_risk_gate")
     ev = spec.factory(spec.params_schema(max_daily_drawdown_pct=5.0))
-    d = ev(_ctx_with_account(drawdown_pct=6.0), {"order": [_pf_order()]}, {})["decision"]
-    assert not d.allowed and "drawdown" in d.reason.lower()
+    d = ev(_ctx_with_account(daily_loss_pct=6.0), {"order": [_pf_order()]}, {})["decision"]
+    assert not d.allowed and "daily loss" in d.reason.lower()
 
 
 def test_portfolio_risk_gate_allows_when_clear():

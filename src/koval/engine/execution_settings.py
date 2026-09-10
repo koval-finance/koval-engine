@@ -47,6 +47,13 @@ _DEFAULT_FEE_SCHEDULES: dict[tuple[str, str], FeeSchedule] = {
     ("binance", "spot"): FeeSchedule(maker_fee_bps=10.0, taker_fee_bps=10.0),
     # Futures signed commission endpoint example returns 0.02% maker / 0.04% taker.
     ("binance", "future"): FeeSchedule(maker_fee_bps=2.0, taker_fee_bps=4.0),
+    # WhiteBIT spot public fee schedule: 0.10% maker / 0.10% taker for a base
+    # (no VIP, no WBT discount) account. See whitebit.com/fee-schedule.
+    ("whitebit", "spot"): FeeSchedule(maker_fee_bps=10.0, taker_fee_bps=10.0),
+    # WhiteBIT perpetual-futures fees are not added here: the public figure
+    # varies by pair and could not be pinned to a primary source, so a
+    # whitebit/future run must pass maker_fee_bps and taker_fee_bps explicitly
+    # rather than resolve to an unverified default.
 }
 
 
@@ -72,7 +79,15 @@ def normalize_execution_mode(execution_mode: Any, *, default: str = DEFAULT_EXEC
 
 
 def _canonical_exchange_type(exchange_type: str) -> str:
-    return "future" if is_futures_exchange_type(exchange_type) else "spot"
+    """Canonical ``spot``/``future`` for a market string.
+
+    Delegates to the same strict canonicaliser the adapter factory and the
+    OHLCV cache use, so an unrecognised market string fails here too instead of
+    silently resolving to spot fees.
+    """
+    from koval.exchanges.markets import canonical_market
+
+    return canonical_market(exchange_type)
 
 
 def _coerce_optional_float(value: Any) -> float | None:
@@ -87,9 +102,15 @@ def _coerce_optional_float(value: Any) -> float | None:
     return parsed if math.isfinite(parsed) and parsed >= 0 else None
 
 
-def _default_fee_schedule(exchange: str, exchange_type: str) -> FeeSchedule:
+def _default_fee_schedule(exchange: str, exchange_type: str) -> FeeSchedule | None:
+    """Return the built-in schedule for a venue/market, or None when there is none.
+
+    A venue Koval has no published schedule for must not silently resolve to
+    zero fees: a free backtest is the most optimistic result the engine can
+    produce, and it would be produced by accident.
+    """
     key = (exchange, _canonical_exchange_type(exchange_type))
-    return _DEFAULT_FEE_SCHEDULES.get(key, FeeSchedule(maker_fee_bps=0.0, taker_fee_bps=0.0))
+    return _DEFAULT_FEE_SCHEDULES.get(key)
 
 
 def resolve_execution_settings(
@@ -141,6 +162,11 @@ def resolve_execution_settings(
         taker_fee_bps = legacy_commission_rate * 10000.0
         fee_source = "legacy_commission"
 
+    if (maker_fee_bps is None or taker_fee_bps is None) and defaults is None:
+        raise ValueError(
+            f"no default fee schedule for {exchange}/{_canonical_exchange_type(exchange_type)}; "
+            "pass maker_fee_bps and taker_fee_bps"
+        )
     if maker_fee_bps is None:
         maker_fee_bps = defaults.maker_fee_bps
     if taker_fee_bps is None:

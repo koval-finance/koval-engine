@@ -27,6 +27,7 @@ depth. Load only what the task calls for.
 | Add or change a block | [adding_a_block.md](adding_a_block.md), then [graph_contracts.md](graph_contracts.md) |
 | Change graph execution or validation | [graph_contracts.md](graph_contracts.md), then [architecture.md](architecture.md) |
 | Exchange adapter, cache, or broker work | [exchanges_and_data.md](exchanges_and_data.md), then [invariants.md](invariants.md) |
+| Paper profiles, fills, or live-engine accounting | [architecture.md](architecture.md), then [exchanges_and_data.md](exchanges_and_data.md) |
 | Test failure or unexpected behaviour | [troubleshooting.md](troubleshooting.md), then [testing.md](testing.md) |
 | Anything touching safety or licensing | [invariants.md](invariants.md) — before writing code |
 | Cutting a release | [release_process.md](release_process.md) |

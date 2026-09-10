@@ -1,6 +1,8 @@
 """Parquet-backed OHLCV cache.
 
-One file per ``(exchange, symbol, timeframe)``. Append-only for closed candles.
+One file per ``(exchange, market, symbol, timeframe)`` — spot and futures
+candles for the same pair are different series and never share a file.
+Append-only for closed candles.
 Read path serves from disk; on miss, asks the adapter only for the missing
 slice, merges, persists, returns.
 """
@@ -13,12 +15,17 @@ import tempfile
 import time
 from collections.abc import Callable
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
 import portalocker
 
 from koval.exchanges.base import OHLCV_COLUMNS, ExchangeAdapter, timeframe_ms
+from koval.exchanges.markets import _DEFAULT_MARKET, canonical_market
+
+if TYPE_CHECKING:
+    from koval.engine.market_data import CandleDataset
 
 _LOCK_TIMEOUT_SECONDS = 30
 _SAFE_PATH_COMPONENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.-]*$")
@@ -66,6 +73,7 @@ class OhlcvCache:
         timeframe: str,
         start_ms: int,
         end_ms: int,
+        exchange_type: str | None = None,
     ) -> np.ndarray:
         """Return candles for ``[start_ms, end_ms)``, populating the cache.
 
@@ -86,10 +94,20 @@ class OhlcvCache:
             _symbol_to_filename(symbol),
             field="symbol",
         )
-        path = self._path_for(safe_exchange, safe_symbol, timeframe)
+        capabilities = adapter.capabilities()
+        market = (
+            canonical_market(exchange_type)
+            if exchange_type
+            else _DEFAULT_MARKET.get(safe_exchange.lower(), capabilities.market)
+        )
+        if capabilities.exchange != safe_exchange.lower() or capabilities.market != market:
+            raise ValueError("adapter identity does not match the requested venue/market")
+        safe_market = _validate_path_component(market, field="market")
+        path = self._path_for(safe_exchange, safe_market, safe_symbol, timeframe)
         if not path.resolve().is_relative_to(self._root.resolve()):
             raise ValueError("cache path escapes its configured root")
         path.parent.mkdir(parents=True, exist_ok=True)
+        self._adopt_legacy_file(safe_exchange, safe_market, safe_symbol, timeframe, path)
         lock_path = path.with_suffix(path.suffix + ".lock")
         with portalocker.Lock(str(lock_path), timeout=_LOCK_TIMEOUT_SECONDS):
             return self._get_locked(
@@ -100,6 +118,50 @@ class OhlcvCache:
                 start_ms=start_ms,
                 end_ms=end_ms,
             )
+
+    def get_evidence(
+        self,
+        adapter: ExchangeAdapter,
+        *,
+        exchange: str,
+        symbol: str,
+        timeframe: str,
+        start_ms: int,
+        end_ms: int,
+        exchange_type: str | None = None,
+    ) -> CandleDataset:
+        from koval.engine.market_data import build_candle_dataset
+
+        forming_open = _forming_bar_open_ms(timeframe, self._now_ms())
+        if end_ms > forming_open:
+            raise ValueError(
+                "canonical OHLCV evidence may contain only closed bars; "
+                f"requested end {end_ms} exceeds closed coverage {forming_open}"
+            )
+        candles = self.get(
+            adapter,
+            exchange=exchange,
+            symbol=symbol,
+            timeframe=timeframe,
+            start_ms=start_ms,
+            end_ms=end_ms,
+            exchange_type=exchange_type,
+        )
+        capabilities = adapter.capabilities()
+        market = canonical_market(exchange_type) if exchange_type else capabilities.market
+        return build_candle_dataset(
+            candles,
+            exchange=exchange,
+            market=market,
+            symbol=symbol,
+            timeframe=timeframe,
+            requested_start_ms=start_ms,
+            requested_end_ms=end_ms,
+            source=(
+                f"{capabilities.exchange}:{capabilities.market}:"
+                f"{capabilities.data_environment}:ohlcv"
+            ),
+        )
 
     def _get_locked(
         self,
@@ -186,8 +248,22 @@ class OhlcvCache:
 
     # ---- internals -------------------------------------------------------
 
-    def _path_for(self, exchange: str, symbol: str, timeframe: str) -> Path:
-        return self._root / exchange / f"{_symbol_to_filename(symbol)}_{timeframe}.parquet"
+    def _path_for(self, exchange: str, market: str, symbol: str, timeframe: str) -> Path:
+        return self._root / exchange / market / f"{_symbol_to_filename(symbol)}_{timeframe}.parquet"
+
+    def _adopt_legacy_file(
+        self, exchange: str, market: str, symbol: str, timeframe: str, path: Path
+    ) -> None:
+        """Move a pre-market cache file under the market it was fetched from.
+
+        Files written before markets were selectable can only hold the market
+        each adapter served then, so they are adopted for that market alone.
+        """
+        if market != _DEFAULT_MARKET.get(exchange.lower()) or path.exists():
+            return
+        legacy = self._root / exchange / f"{_symbol_to_filename(symbol)}_{timeframe}.parquet"
+        if legacy.is_file():
+            os.replace(legacy, path)
 
     def _read(self, path: Path) -> np.ndarray:
         if not path.is_file():

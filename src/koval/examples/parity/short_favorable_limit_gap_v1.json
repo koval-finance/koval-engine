@@ -1,0 +1,60 @@
+{
+  "fixture_id": "short_favorable_limit_gap_v1",
+  "contract": "koval_execution_contract_v1",
+  "exchange": "binance",
+  "exchange_type": "future",
+  "timeframe": "1h",
+  "capital": 10000.0,
+  "costs": {
+    "commission_bps": 4.0,
+    "spread_bps": 20.0,
+    "slippage_bps": 10.0,
+    "leverage": 1.0
+  },
+  "graph": {
+    "blocks": [
+      {
+        "id": "sig",
+        "type": "signal.every_bar",
+        "params": {"direction": "bearish"}
+      },
+      {
+        "id": "ent",
+        "type": "entry.short_only",
+        "params": {"entry_type": "limit"}
+      },
+      {
+        "id": "ex",
+        "type": "exit.fixed_sl_tp",
+        "params": {"sl_pct": 10.0, "risk_reward": 2.0}
+      },
+      {
+        "id": "rsk",
+        "type": "risk.pct_risk",
+        "params": {"risk_pct": 0.2, "leverage": 1.0}
+      }
+    ],
+    "connections": [
+      {"from": "sig", "to": "ent"},
+      {"from": "ent", "to": "ex"},
+      {"from": "ex", "to": "rsk"}
+    ]
+  },
+  "candles": [
+    [1704067200000, 100, 101, 99, 100, 10],
+    [1704070800000, 105, 106, 101, 103, 10],
+    [1704074400000, 80, 81, 79, 80, 10]
+  ],
+  "expected": {
+    "trades": [
+      {
+        "direction": "short",
+        "entry_price": 104.79,
+        "exit_price": 80.16,
+        "commission": 0.14796,
+        "exit_reason": "tp"
+      }
+    ],
+    "final_equity": 10049.11204
+  }
+}

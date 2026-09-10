@@ -10,6 +10,7 @@ def test_event_type_has_required_values():
         "FILTER_REJECTED",
         "ORDER_PLACED",
         "ORDER_FILLED",
+        "ORDER_REJECTED",
         "TRADE_OPENED",
         "TRADE_CLOSED",
         "DRAWDOWN_LIMIT_HIT",

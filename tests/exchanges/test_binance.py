@@ -234,3 +234,65 @@ def test_fetch_ohlcv_rejects_non_advancing_pagination():
         BinanceAdapter(testnet=True, page_limit=2).fetch_ohlcv(
             "BTC/USDT", "1m", start, start + 300_000
         )
+
+
+@responses.activate
+def test_fetch_funding_history_normalizes_settlement_evidence():
+    interval = 8 * 60 * 60 * 1000
+    responses.add(
+        responses.GET,
+        "https://fapi.binance.com/fapi/v1/fundingRate",
+        json=[
+            {
+                "symbol": "BTCUSDT",
+                "fundingTime": 0,
+                "fundingRate": "0.00010000",
+                "markPrice": "100.5",
+            },
+            {
+                "symbol": "BTCUSDT",
+                "fundingTime": interval,
+                "fundingRate": "-0.00020000",
+                "markPrice": "101.5",
+            },
+        ],
+    )
+    adapter = BinanceAdapter(testnet=False, market="future")
+
+    series = adapter.fetch_funding_history("BTC/USDT", 0, interval)
+
+    assert [str(record.rate) for record in series.records] == ["0.00010000", "-0.00020000"]
+    assert [str(record.settlement_mark_price) for record in series.records] == [
+        "100.5",
+        "101.5",
+    ]
+    assert series.coverage_complete
+    assert series.raw_responses
+
+
+@responses.activate
+def test_binance_funding_does_not_invent_an_interval_from_one_record():
+    responses.add(
+        responses.GET,
+        "https://fapi.binance.com/fapi/v1/fundingRate",
+        json=[
+            {
+                "symbol": "BTCUSDT",
+                "fundingTime": 28_800_000,
+                "fundingRate": "0.00010000",
+                "markPrice": "100.5",
+            }
+        ],
+    )
+
+    with pytest.raises(ValueError, match="funding interval is unavailable"):
+        BinanceAdapter(testnet=False, market="future").fetch_funding_history(
+            "BTCUSDT", 1, 28_800_001
+        )
+
+
+def test_binance_spot_funding_is_explicitly_unavailable():
+    from koval.engine.funding import FundingUnavailableError
+
+    with pytest.raises(FundingUnavailableError):
+        BinanceAdapter(testnet=False, market="spot").fetch_funding_history("BTCUSDT", 0, 1)

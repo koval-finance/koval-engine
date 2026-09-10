@@ -14,6 +14,8 @@ from typing import Any, Final
 import numpy as np
 import requests
 
+from koval.exchanges.capabilities import VenueCapabilities
+
 OHLCV_COLUMNS: Final[tuple[str, ...]] = (
     "timestamp_ms",
     "open",
@@ -169,6 +171,21 @@ class ExchangeAdapter(ABC):
         candle when the range reaches the present — ``OhlcvCache`` is responsible
         for dropping it. Returns an empty ``(0, 6)`` array if the exchange has no
         data in the range.
+        """
+
+    def fetch_funding_history(self, symbol: str, start_ms: int, end_ms: int):
+        """Return normalized funding evidence, or fail explicitly when unsupported."""
+        from koval.engine.funding import FundingUnavailableError
+
+        raise FundingUnavailableError(f"{type(self).__name__} funding history is unavailable")
+
+    @abstractmethod
+    def capabilities(self) -> VenueCapabilities:
+        """Return what this adapter's venue and market can actually be asked for.
+
+        The record is how a caller learns which market the adapter serves, so
+        the OHLCV cache can keep spot and futures candles apart and a runtime
+        can refuse to assume evidence a venue does not publish.
         """
 
     @abstractmethod

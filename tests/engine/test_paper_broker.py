@@ -524,3 +524,19 @@ def test_protocol_flatten_closes_at_last_seen_price_and_records_fill():
     assert [fill.role for fill in fills] == ["entry", "flatten"]
     assert fills[-1].price == "104.0"
     assert fills[-1].timestamp_ms == 60_000
+
+
+def test_legacy_take_profit_uses_favorable_open():
+    b = PaperBroker(starting_balance=10_000.0)
+    b.submit_bracket(
+        side="buy",
+        entry_price=100.0,
+        stop_price=95.0,
+        target_price=110.0,
+        quantity=2.0,
+        order_type="market",
+    )
+    b.fill_market_if_pending(ts_ms=0, price=100.0)
+    (fill,) = b.process_bar(ts_ms=60_000, open=112.0, high=113.0, low=111.0, close=112.5)
+    assert fill.kind == "take_profit" and fill.price == 112.0
+    assert b.balance == 10_000.0 + 24.0

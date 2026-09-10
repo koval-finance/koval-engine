@@ -42,8 +42,8 @@ def portfolio_risk_check(
     max_concurrent_positions: int,
     max_total_margin_pct: float,
 ) -> tuple[bool, str | None]:
-    if account.drawdown_pct > max_daily_drawdown_pct:
-        return False, f"daily drawdown {account.drawdown_pct:.2f}% > {max_daily_drawdown_pct}%"
+    if account.daily_loss_pct > max_daily_drawdown_pct:
+        return False, f"daily loss {account.daily_loss_pct:.2f}% > {max_daily_drawdown_pct}%"
     if account.open_positions >= max_concurrent_positions:
         return False, (
             f"concurrent positions {account.open_positions} >= {max_concurrent_positions}"
