@@ -267,7 +267,8 @@ First public release.
 - The MIT/GPL boundary is enforced by a test rather than by convention: no file in this package may import Backtrader.
 - Releases are published to PyPI through Trusted Publishing (OIDC) with PEP 740 attestations. No long-lived PyPI credential is used in CI.
 
-[Unreleased]: https://github.com/koval-finance/koval-engine/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/koval-finance/koval-engine/compare/v0.11.1...HEAD
+[0.11.1]: https://github.com/koval-finance/koval-engine/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/koval-finance/koval-engine/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/koval-finance/koval-engine/releases/tag/v0.10.0
 [0.9.0]: https://github.com/koval-finance/koval-engine/releases/tag/v0.9.0
