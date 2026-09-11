@@ -1,8 +1,10 @@
 # Koval Realistic Trading Roadmap
 
 Repository scope: **koval-engine**  
-Status: **engine implementation complete; cross-repository acceptance pending**  
-Last reviewed: **2026-09-10** (implementation review complete; see below)
+Status: **0.11.0 engine candidate implemented and locally verified; downstream acceptance pending**
+Last reviewed: **2026-09-11** — ENG-008 and ENG-010 through ENG-014 are implemented
+in the 0.11.0 candidate. The earlier measurement against released 0.10.0 remains
+historical evidence, not acceptance of the new pair. See the 0.11 review below.
 
 ## Purpose
 
@@ -111,6 +113,26 @@ ledger, including gaps, fees, session boundaries, restarts, and rejected fills.
 Acceptance: a plugin or app release cannot claim parity by passing only the
 original narrow fixtures.
 
+### ENG-008 — Honor `on_tp_update` in the live and paper runtime
+
+The 0.10.0 differential harness correctly found that paper ignored this hook.
+Implemented for 0.11.0 under `koval_runtime_v2`:
+
+- [x] Observe failing long/short target regressions, then call both protection
+  hooks after bar matching.
+- [x] Snapshot both requested legs before applying a replacement. Paper updates
+  them together; sandbox accepts the new reduce-only pair before canceling the
+  old pair and contains any uncertain outcome.
+- [x] Publish `validate_protection_update`: positive finite levels, a stop that
+  never increases risk, and strict ordering of the final pair. Targets can move
+  in either direction; dynamic stops may lock profit beyond entry.
+- [x] Publish `long_dynamic_target_v2` and `short_dynamic_target_v2` through
+  `koval.examples.parity_fixtures`, with explicit after-bar hook actions.
+
+Acceptance still required downstream: the plugin passes these fixtures against
+an installed 0.11 wheel and removes `paper_runtime_ignores_take_profit_updates`.
+The exact contract is in [runtime_contract.md](agents_docs/runtime_contract.md).
+
 ## P0 — Venue, market, and live-session safety
 
 ### ENG-005 — Enforce venue/market/mode compatibility
@@ -150,6 +172,145 @@ leave exposure without a recorded containment decision.
 
 Acceptance: mutating a still-open higher-timeframe candle cannot change an
 earlier live decision.
+
+## P0 — Release identity
+
+### ENG-009 — Make a published version identify the code
+
+Closed on 2026-09-10: the published distribution **is** the code in this
+repository. The report this item was opened for measured a stale local build
+and attributed its behavior to the release.
+
+`koval-engine==0.10.0` was uploaded to PyPI at 2026-09-10T12:02:56Z by the
+tag-triggered release workflow, from `9b7ff22` — the commit `v0.10.0` points
+at. Both published artifacts carry this tree's engine sources exactly, with no
+missing, extra, or altered file:
+
+```console
+$ python scripts/check_dist.py <downloaded pypi artifacts>
+koval_engine-0.10.0-py3-none-any.whl: matches src/koval at 0.10.0
+koval_engine-0.10.0.tar.gz: matches src/koval at 0.10.0
+```
+
+Run against the published wheel in a clean virtualenv, both demonstration cases
+behave exactly as this repository does: the buy limit fills at the favorable
+open of 96.0, and the stop entry that would need roughly 1096 of margin against
+1000 of capital is rejected, leaving 1000.00 free. No stored result recording
+`koval-engine: 0.10.0` from PyPI is ambiguous.
+
+The 694-line `paper_broker.py` belongs to
+`dist/koval_engine-0.10.0-py3-none-any.whl`, a local build from 2026-09-06 that
+already carried `version = "0.10.0"` four days before the release commit.
+`dist/` is gitignored, so it never reached PyPI — it reached the sibling
+checkouts instead. Both record a local file install rather than a PyPI one, and
+they do not even record the same file:
+
+```console
+$ cat …/koval-backtrader/.venv/…/koval_engine-0.10.0.dist-info/direct_url.json
+{"archive_info": {"hash": "sha256=55392aa1…"},
+ "url": "file:///…/koval-engine/dist/koval_engine-0.10.0-py3-none-any.whl"}
+$ cat …/koval-app/.venv/…/koval_engine-0.10.0.dist-info/direct_url.json
+{"archive_info": {"hash": "sha256=78d95008…"},
+ "url": "file:///…/koval-engine/dist/koval_engine-0.10.0-py3-none-any.whl"}
+```
+
+Three builds carried the string 0.10.0 on this machine; only one of them is a
+release. The reproducibility failure was real, but it lived in the local
+install path, not in the published version.
+
+- [x] Establish which build PyPI carries by comparing both published artifacts
+  against `src/koval` at the tag. They match, so `main` stays 0.10.0: there is
+  no second execution contract to disambiguate with a 0.11.0, and nothing to
+  yank.
+- [x] Add a release gate that fails when a built artifact's sources differ from
+  the tree — `scripts/check_dist.py`, run by the release workflow between
+  `python -m build` and the artifact upload, and by the default test suite
+  against a local `dist/` so a stale artifact cannot sit where an install or a
+  parity measurement can find it.
+- [x] Re-run the `koval-backtrader` differential harness against the released
+  engine. Done 2026-09-11. The plugin venv loads `koval-engine 0.10.0` from
+  PyPI (`INSTALLER: pip`, no `direct_url.json`, `paper_broker.py` at 1656
+  lines). Result: `paper_limit_entry_ignores_favorable_open`,
+  `paper_limit_entry_requires_range_touch` and
+  `paper_affordability_not_rechecked_at_fill` no longer reproduce and are the
+  plugin's to retire; `paper_runtime_ignores_take_profit_updates` still does
+  (ENG-008). The plugin's suite is red on this — its stale-exemption guard
+  refuses to let a fixed divergence sit unnoticed, which is the guard working.
+  Tracked there as BT-005.
+
+Acceptance: `pip install koval-engine==<version>` yields byte-identical
+execution behavior to this repository at the corresponding tag, and a downstream
+result recording an engine version can be replayed from that version alone. Met
+for 0.10.0 by the comparison above; the gate keeps it true for the next release.
+
+## P0 — Cross-repository contract gaps
+
+Opened 2026-09-11 from the first end-to-end read of this repository against
+`koval-backtrader` at its 0.11.0 working tree. Each item is a place where the
+two runtimes, or this repository and its own published claims, do not agree.
+None of them is caught by either suite today, because each lives in the gap
+between them.
+
+### ENG-010 — Preserve evidence through broker construction
+
+- [x] `SandboxBrokerConfig` accepts funding, fee schedules, instrument specs,
+  mark prices, and execution proxy; `build_broker` forwards all five.
+- [x] `PaperBroker.execution_evidence` identifies each supplied normalized input
+  by content hash; absent inputs have explicit `unavailable` status.
+- [x] An injected paper broker is checked against explicitly configured profile,
+  market, venue, symbol, capital, and evidence before processing begins.
+
+Acceptance here: factory and direct construction expose the same evidence
+manifest for the same inputs; content changes remain distinguishable even when
+an evidence ID or profile name is reused. Plugin adoption remains external.
+
+### ENG-011 — Publish the MIT run identity contract
+
+- [x] Own normalized identity in this MIT repository; hosts own archive retention,
+  archive verification and promotion decisions.
+- [x] Publish `koval_run_identity_v1`, `build_run_identity`, `content_sha256`,
+  `execution_evidence_manifest` and constant-memory `CandleStreamIdentity`.
+- [x] Include actual market, candle/warm-up identity, execution version/evidence,
+  graph hash, run parameters, package version, and reproducibility grade in live
+  statuses and trade records.
+- [x] Grade unspecified venue, empty input and sandbox runs `not_comparable`;
+  `identified_simulation` does not certify historical realism or archive retention.
+
+Acceptance here: actual input prefixes are recorded; the terminal status records
+all consumed candles. The plugin must import this vocabulary before applications
+compare the runtimes. Do not claim both released runtimes already implement it.
+
+### ENG-012 — Settle the spot-refusal policy
+
+- [x] Choose `reject_and_continue`: valid spot-short setups receive
+  `ORDER_REJECTED` with `spot_short_unsupported`; a later long may trade.
+- [x] Preserve a typed low-level refusal (`PaperOrderRejected`, a `ValueError`
+  subclass), with the stable reason exposed by `submit_entry` acknowledgements.
+- [x] Publish `spot_short_rejected_v2` and add a market-aware conformance scenario.
+- [x] Close the direct-constructor spot leverage bypass.
+
+Acceptance here: paper rejects without exposure or session halt. Downstream
+parity must set the scenario market rather than silently using futures.
+
+### ENG-013 — Name the market vocabulary both runtimes must use
+
+- [x] Publish `MarketIdentity` and `resolve_market_identity` in the MIT engine.
+- [x] Record `spot` / `future`, with `spot` / `perpetual` contract types. Normalize
+  supported futures spellings; refuse delivery/inverse products and unknown venues.
+- [x] Reuse exported `assert_supported_market` and `compatibility_for` so venue
+  validation has one owner.
+
+Acceptance here: identity builders and runtime evidence checks share the same
+vocabulary. Plugin-local `futures` identity must migrate to canonical `future`.
+
+### ENG-014 — Require artifacts in release verification
+
+- [x] Add `--require-artifacts`; an empty/missing directory exits nonzero.
+- [x] Use it in the release workflow after building and before upload.
+- [x] Keep permissive local-`dist/` checks when the flag is absent.
+
+Acceptance: a release gate cannot pass without comparing an artifact; the local
+suite still supports a checkout that has never built a distribution.
 
 ## R1 — Reproducible market-data input
 
@@ -235,7 +396,12 @@ order-book or queue-position simulator.
   state-transition behavior.
 - [x] Pass focused engine tests and `./scripts/verify.sh`.
 - [x] Publish or update shared fixtures and resolved metadata.
-- [ ] Run the compatible `koval-backtrader` suite against the candidate engine.
+- [x] Run the compatible `koval-backtrader` suite against the candidate engine.
+  Done 2026-09-11 against released 0.10.0. It exits 1, and every failure is
+  that repository's to fix: five stale divergence exemptions, two fixture
+  assertions that predate `long_entry_bar_ambiguity_v2` and the second
+  direct-setup fixture, and one test still encoding the pre-ENG-003 daily-PnL
+  boundary. No failure indicts the engine. Tracked there as BT-005 and BT-006.
 - [ ] Run the installed-wheel contract and promotion tests in `koval-app`.
 - [x] Review documentation and release notes without weakening safety guards.
 
@@ -282,6 +448,104 @@ Open for the reviewer's judgement, deliberately left as-is:
 - `paper_legacy_v1` remains the default profile, so a caller that passes no
   execution config still gets the cost-free simulation. Selecting
   `paper_ohlcv_realistic_v2` is the application's decision.
+
+## 0.11 implementation review (2026-09-11)
+
+The candidate closes the six previously unchecked engine items above and adds
+regressions for evidence bounds, exhausted funding coverage, partial-exit cost
+attribution, quote-fee validation and unsupported contract multipliers. Nonzero
+cancellation/replacement latency now fails explicitly: its earlier appearance in
+metadata did not mean the paper loop scheduled those effects. Earlier checked
+R5 boxes must be read with this current limitation.
+
+The source review also found Binance's conditional API migration. The candidate
+now defaults to Algo Service, tracks the actual child order for fills/fees,
+verifies cancellation, and checks both ordinary and algo open orders during
+reconciliation. An explicit `legacy` wire option remains for older testnet
+integrations. The testnet origin allowlist and the two execution modes are
+unchanged. HTTP mocks do not replace authenticated sandbox acceptance.
+
+Primary sources, regression coverage, and remaining limitations are recorded in
+[realism_review.md](agents_docs/realism_review.md); plugin migration details are in
+[runtime_contract.md](agents_docs/runtime_contract.md). The prior 0.10 plugin
+measurement below cannot serve as acceptance for these new contracts.
+
+Local engine verification: **1196 passed, 6 skipped, 6 deselected** on Python
+3.13, with lint/formatting and built-artifact checks passing. An isolated plugin
+snapshot produced **231 passed, 9 failed** across five selected suites and failed
+`pip check` because its dependency range still excluded engine 0.11. This is a
+diagnostic of that snapshot, not acceptance of the concurrently changing plugin.
+The exact failures and handoff are recorded in the review document above.
+
+- [x] Observe focused failures before behavioral fixes.
+- [x] Publish MIT contracts and additional immutable parity fixtures.
+- [x] Run the engine's complete verification gate.
+- [ ] Obtain a compatible released plugin's full passing suite against the final
+  0.11 wheel, with its dependency range and shared identity vocabulary updated.
+- [ ] Run supervised authenticated Binance testnet acceptance for the Algo API.
+- [ ] Run installed-wheel application contract tests after application integration.
+
+## What koval-app needs for matching backtest and paper results
+
+Recorded here and mirrored in `koval-backtrader` so neither repository has to be
+read to know what the other owes. Nothing in this section is application work;
+it is what this repository and the plugin must publish before the application
+can honestly show a backtest and a paper session side by side.
+
+**Owned by this repository**
+
+1. Release identity is settled: `koval-engine==0.10.0` on PyPI is this tree at
+   `v0.10.0`, and `scripts/check_dist.py` gates every later release (ENG-009).
+   An application that pins the version and installs from PyPI gets exactly one
+   execution contract; installing from a local `dist/` is what produced the
+   second one.
+2. Honor `on_tp_update` in 0.11.0 (ENG-008), publishing its ordering and
+   replacement validation as `koval_runtime_v2`.
+3. Keep `paper_ohlcv_fixed_v1` immutable, and publish `paper_ohlcv_realistic_v2`
+   with the fixtures the plugin has to reproduce.
+4. Ship the parity fixtures for every scenario class the plugin declares a
+   divergence for, so agreement is proven from shared evidence rather than from
+   each side's own tests.
+
+**Owned by koval-backtrader**
+
+1. Retire the divergence exemptions its stale-exemption guard names, and get
+   its suite green again (BT-005, BT-006 there). Five of six no longer
+   reproduce against the released engine.
+2. Implement the successor execution-model version against
+   `paper_ohlcv_realistic_v2` without changing `ohlcv_fixed_v1` replay
+   (BT-002 there). This is the critical path: until it lands, the only profile
+   pair both runtimes implement is the least realistic one either offers, so a
+   realistic paper session has no comparable backtest.
+3. Consume the funding, fee-role, instrument and liquidity contracts, which are
+   released, rather than approximating them.
+4. Fix its account wiring (BT-007 there). `strategy.account` is a backtest-only
+   attribute this repository never reads, graph strategies still size from
+   requested prices, and `on_stop_moved` re-opens the position instead of
+   calling `PlatformAccountState.on_stop_update`, bypassing the
+   "must not increase risk" guard the live runner enforces.
+
+**The contract the application depends on**
+
+- One profile pair per run: a backtest on `ohlcv_fixed_v1` is comparable only to
+  a paper session on `paper_ohlcv_fixed_v1`, and the same for the successor
+  versions. Mixing profiles is not a supported comparison and the application
+  should refuse it rather than render it.
+- `paper_legacy_v1` remains the default when no execution config is passed, so
+  an application that omits one gets the cost-free simulation. Selecting a
+  realistic profile is the application's explicit decision.
+- Engine 0.11 publishes and records market, data/evidence and execution identity.
+  The plugin must adopt the MIT contract before the application compares runs.
+  A result missing any identity is not comparable; `identified_simulation` is
+  input identity, not a guarantee of archival completeness or venue realism.
+- An effect that is unavailable is reported as `unavailable`, never as zero.
+  Rendering a missing funding cashflow as `0.00` is a claim the engine did not
+  make.
+
+Acceptance for the application tier, once both repositories have released: the
+same graph, candles, capital and profile produce the same fills, the same cost
+attribution and the same closing equity in a backtest and in a paper session,
+and any remaining difference is one the plugin declares with a reason code.
 
 ## Completion definition
 

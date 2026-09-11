@@ -9,7 +9,12 @@ An open engine for building and validating trading strategies as dataflow graphs
 
 ## Status
 
-Beta. This is the `0.10.x` series and the public API may change before 1.0.
+Beta. This is the `0.11.x` series and the public API may change before 1.0.
+
+Version 0.11 adds dynamic take-profit updates, common market/run identities,
+factory evidence transport, and current Binance conditional-order API support.
+See the [runtime and plugin migration contract](https://github.com/koval-finance/koval-engine/blob/main/agents_docs/runtime_contract.md)
+and the [execution realism review](https://github.com/koval-finance/koval-engine/blob/main/agents_docs/realism_review.md).
 
 ## Quick start
 
@@ -64,9 +69,18 @@ Read this before trusting a number it prints.
 - **Optional execution evidence.** A v2 paper run can receive historical funding, fee schedules, instrument constraints, mark prices, and a lagged impact calibration. Supplied evidence is identified on fills and in resolved metadata; missing evidence is reported as `unavailable`, not silently treated as observed zero. Instrument rules can quantize or reject orders, mark prices can trigger maintenance-margin liquidation under the currently supported single-position cross-margin model, and one shared bar-volume budget can produce partial fills with explicit remainder and protection policies.
 - **Backtest plugins.** Plugins remain separate packages. `EngineRunSpec` can request an execution-contract version and named capabilities; negotiation fails closed when a plugin cannot honor them. Passing the same public fixtures and archived evidence proves that runtimes followed the same declared deterministic rules. It does not prove that an OHLCV simulation reproduced a real exchange's order-book queue or historical account fill.
 
-- **Sandbox execution.** The built-in Binance USD-M Futures testnet broker accepts market, limit and stop entries. Every entry requires a full stop-loss/take-profit bracket, and protection is confirmed immediately after a full fill; a working entry is supervised independently of blocked or retrying market-data requests. Venue commissions are read from `userTrades` and are never converted from another asset. A partial fill triggers containment instead of being adopted as a running strategy position. Signed requests support measured server-time skew; excessive skew and exhausted market-data retries fail with stable reasons.
-- **Execution scope.** The CLI and built-in Binance sandbox broker target futures. Data adapters serve both spot and futures, selected by `exchange_type`. Fees for a venue and market without a built-in schedule must be passed explicitly — `resolve_execution_settings` raises rather than defaulting to zero. This package does not implement built-in spot order execution.
+- **Sandbox execution.** The built-in Binance USD-M Futures testnet broker accepts market, limit and stop entries. Conditional orders use Algo Service by default and fills are read from the triggered child order. Every entry requires a full stop-loss/take-profit bracket, and protection is confirmed immediately after a full fill; a working entry is supervised independently of blocked or retrying market-data requests. Venue commissions are read from `userTrades` and are never converted from another asset. A partial fill triggers containment instead of being adopted as a running strategy position. Signed requests support measured server-time skew; excessive skew and exhausted market-data retries fail with stable reasons.
+- **Execution scope.** The CLI and built-in Binance sandbox broker target futures. Data adapters serve both spot and futures, selected by `exchange_type`. Fees for a venue and market without a built-in schedule must be passed explicitly — `resolve_execution_settings` raises rather than defaulting to zero. Paper supports long-only spot at leverage one; the built-in exchange sandbox does not execute spot orders.
 - **No real-money trading.** Only `paper` and `binance_sandbox` are reachable execution modes. WhiteBIT execution fails closed. These boundaries are enforced in code and pinned by safety tests.
+
+Paper session metadata includes content identities for actual primary/warm-up
+candles and supplied execution evidence. Set `LiveEngineConfig.exchange` (or use
+a factory-built broker) to name the venue. Unknown-venue runs are explicitly not
+comparable. `identified_simulation` means the inputs are identified, not that
+all evidence was available or archived. The host must retain the exact inputs.
+Nonzero cancellation/replacement latency and non-unit contract multipliers are
+rejected by the current paper broker. Authenticated testnet acceptance is
+separate from the automated HTTP-mock suite.
 
 Even the richest paper profile is a calibrated OHLCV proxy, not an order-book or queue-position simulator. Latency values are deterministic assumptions, and a bar's volume does not show which liquidity was available at a particular price. Results may overstate or understate actual execution. Treat them as reproducible research evidence, not as a forecast or guarantee of returns.
 

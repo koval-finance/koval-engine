@@ -29,6 +29,8 @@ def test_deterministic_scenarios_cover_both_sides_and_all_entry_types():
         "insufficient_margin",
         "end_of_data_open_at_stop",
         "dynamic_protection",
+        "dynamic_target",
+        "spot_short_unsupported",
     } <= tags
 
     cancellation = next(case for case in first if "cancellation" in case.coverage_tags)

@@ -9,6 +9,10 @@ from dataclasses import dataclass, field
 import requests
 
 from koval.engine.broker import Broker
+from koval.engine.execution_proxy import ExecutionProxyConfig
+from koval.engine.fee_evidence import FeeScheduleEvidence
+from koval.engine.funding import FundingSeries
+from koval.engine.instrument_risk import InstrumentSpecEvidence, MarkPriceSeries
 from koval.engine.paper_broker import PaperBroker
 from koval.engine.paper_profile import resolve_paper_profile
 from koval.exchanges.binance_sandbox import BinanceSandboxBroker, ClockSkewExceeded
@@ -26,6 +30,11 @@ class SandboxBrokerConfig:
     # The paper execution profile, resolved here so the one place execution
     # modes are decided is also the one place their cost model is decided.
     paper_profile: Mapping[str, object] | None = None
+    funding: FundingSeries | None = None
+    fee_schedule: FeeScheduleEvidence | None = None
+    instrument_specs: tuple[InstrumentSpecEvidence, ...] = ()
+    mark_prices: MarkPriceSeries | None = None
+    execution_proxy: ExecutionProxyConfig | None = None
 
 
 def build_broker(mode: str, config: SandboxBrokerConfig) -> Broker:
@@ -40,6 +49,12 @@ def build_broker(mode: str, config: SandboxBrokerConfig) -> Broker:
             config.initial_capital,
             profile=profile,
             market=compatibility.market,
+            exchange=compatibility.exchange,
+            funding=config.funding,
+            fee_schedule=config.fee_schedule,
+            instrument_specs=config.instrument_specs,
+            mark_prices=config.mark_prices,
+            execution_proxy=config.execution_proxy,
         )
     if mode == "binance_sandbox":
         broker = BinanceSandboxBroker(

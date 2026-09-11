@@ -33,8 +33,8 @@ def _proxy(*, participation=0.1):
             decision_to_submission_ms=10,
             submission_to_acknowledgement_ms=20,
             acknowledgement_to_fill_ms=30,
-            cancellation_ms=40,
-            replacement_ms=50,
+            cancellation_ms=0,
+            replacement_ms=0,
             protection_activation_ms=60,
         ),
     )

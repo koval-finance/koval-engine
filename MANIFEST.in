@@ -5,6 +5,7 @@ include CLAUDE.md
 include CODE_OF_CONDUCT.md
 include CONTRIBUTING.md
 include GEMINI.md
+include REALISTIC_TRADING_ROADMAP.md
 include SECURITY.md
 graft .cursor
 graft .github

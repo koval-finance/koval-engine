@@ -8,8 +8,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from koval.engine.market_identity import resolve_market_identity
 from koval.exchanges.base import OHLCV_COLUMNS, timeframe_ms
-from koval.exchanges.markets import canonical_market
 
 _MAGIC = b"KOVAL-CANDLES-V1\n"
 _ROW = struct.Struct("<qddddd")
@@ -102,6 +102,16 @@ def build_candle_dataset(
 ) -> CandleDataset:
     values = _validated_candles(candles).copy()
     step = timeframe_ms(timeframe)
+    identity = resolve_market_identity(exchange=exchange, market=market, symbol=symbol)
+    for bound in (requested_start_ms, requested_end_ms):
+        if isinstance(bound, bool) or not isinstance(bound, int) or bound < 0 or bound % step:
+            raise ValueError(
+                "candle request bounds must be non-negative aligned integer timestamps"
+            )
+    if requested_end_ms < requested_start_ms:
+        raise ValueError("candle request end must not precede start")
+    if not str(source).strip():
+        raise ValueError("candle evidence source is required")
     timestamps = values[:, 0].astype(np.int64)
     unique, counts = np.unique(timestamps, return_counts=True)
     duplicates = tuple(int(value) for value in unique[counts > 1])
@@ -109,6 +119,14 @@ def build_candle_dataset(
         raise ValueError(f"duplicate candle timestamp: {duplicates[0]}")
     if len(timestamps) > 1 and np.any(np.diff(timestamps) <= 0):
         raise ValueError("canonical candle timestamps must be strictly increasing")
+    if (
+        np.any(timestamps % step)
+        or np.any(timestamps < requested_start_ms)
+        or np.any(timestamps >= requested_end_ms)
+    ):
+        raise ValueError(
+            "canonical candles must align and stay inside the requested half-open range"
+        )
     expected = np.arange(requested_start_ms, requested_end_ms, step, dtype=np.int64)
     missing = np.setdiff1d(expected, timestamps, assume_unique=True)
     gaps = tuple((int(timestamp), int(timestamp + step)) for timestamp in missing)
@@ -121,9 +139,9 @@ def build_candle_dataset(
     )
     encoded = canonical_candle_bytes(values)
     metadata = CandleDatasetMetadata(
-        exchange=str(exchange).strip().lower(),
-        market=canonical_market(market),
-        canonical_symbol=str(symbol).replace("/", "").replace("_", "").upper(),
+        exchange=identity.exchange,
+        market=identity.market,
+        canonical_symbol=identity.canonical_symbol,
         timeframe=timeframe,
         requested_start_ms=int(requested_start_ms),
         requested_end_ms=int(requested_end_ms),

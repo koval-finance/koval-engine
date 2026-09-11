@@ -38,7 +38,7 @@ match the requested venue and market. A pre-market file at
 market that adapter used to serve (Binance futures, WhiteBIT spot).
 
 `OhlcvCache.get_evidence` wraps a requested interval in an immutable
-`CandleDataset`. It validates complete coverage and OHLCV constraints, records
+`CandleDataset`. It validates complete coverage, aligned half-open request bounds, venue identity, source, and OHLCV constraints, records
 venue/market/symbol/timeframe identity and actual bounds, encodes every row with
 the versioned little-endian `koval_candles_f64le_v1` format, and returns its
 SHA-256 hash. Evidence ranges may contain only bars closed at acquisition time;
@@ -101,6 +101,23 @@ Adding a real-money execution path, widening the sandbox allowlist, or
 adding an execution mode is not a contribution this project accepts, from
 anyone, for any reason. The invariant is pinned by
 [`tests/safety/test_no_real_money_path.py`](../tests/safety/test_no_real_money_path.py).
+
+The factory now forwards the complete optional paper evidence stack. Both direct
+construction and injected sessions validate market/evidence agreement. Funding
+coverage exhaustion raises rather than silently omitting later cashflows.
+
+In 0.11 the Binance sandbox defaults to `conditional_order_api="algo"`.
+`binance_algo.py` translates conditional submissions to `algoOrder`, follows
+`actualOrderId` for fill and fee reconciliation, verifies cancellation, and adds
+`openAlgoOrders` to startup reconciliation. The original wire API is an explicit
+`legacy` option; neither option changes the origin allowlist. Dynamic SL/TP
+replacement validates the final pair, accepts both new legs before canceling
+old protection, and fails closed on uncertain outcomes.
+
+See [runtime_contract.md](runtime_contract.md) for precise identity, protection,
+fee-currency, contract-size and latency limitations, and
+[realism_review.md](realism_review.md) for the source-backed review. Authenticated
+sandbox acceptance must be run separately from the offline suite.
 
 Update this file when: an adapter is added, the cache format changes, or the
 sandbox ruleset changes.

@@ -27,6 +27,7 @@ _REQUIRED_KEYS = {
 def test_expected_fixtures_are_shipped():
     ids = sorted(fixture["fixture_id"] for fixture in parity_fixtures())
     assert ids == [
+        "long_dynamic_target_v2",
         "long_entry_bar_ambiguity_v2",
         "long_favorable_limit_gap_v1",
         "long_gap_stop_v1",
@@ -34,9 +35,11 @@ def test_expected_fixtures_are_shipped():
         "long_leverage_spread_rejected_v1",
         "long_leverage_v1",
         "long_take_profit_touch_v1",
+        "short_dynamic_target_v2",
         "short_favorable_limit_gap_v1",
         "short_full_notional_bracket_v1",
         "short_leverage_v1",
+        "spot_short_rejected_v2",
     ]
 
 

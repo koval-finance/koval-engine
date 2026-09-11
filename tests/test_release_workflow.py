@@ -29,6 +29,14 @@ def test_release_build_runs_all_quality_gates_before_artifact_upload():
     assert missing == [], f"release artifact is uploaded before these gates run: {missing}"
 
 
+def test_built_distributions_are_checked_against_the_tree_before_upload():
+    workflow = _workflow_text()
+    build = workflow.index("python -m build")
+    gate = workflow.index("python scripts/check_dist.py")
+    upload = workflow.index("actions/upload-artifact@")
+    assert build < gate < upload
+
+
 def test_changelog_is_validated_before_pypi_publish():
     workflow = _workflow_text()
     changelog_validation = workflow.index("No changelog entry found")

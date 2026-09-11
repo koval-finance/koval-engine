@@ -23,12 +23,14 @@ from koval.engine.broker import (
     ProtectiveOrderIntent,
 )
 from koval.engine.client_order_id import make_client_order_id
+from koval.engine.protection import validate_protection_update
 from koval.engine.venue_metadata import VenueSymbolMetadata, validate_order_against_metadata
 from koval.exchanges.auth import (
     hmac_sha256,
     redact_mapping,
     safe_exception_message,
 )
+from koval.exchanges.binance_algo import AlgoOrderRouter
 
 _TESTNET_URL = "https://testnet.binancefuture.com"
 _ALLOWED_BASE_URLS = {_TESTNET_URL}
@@ -55,6 +57,8 @@ class _TrackedOrder:
 
 class BinanceSandboxBroker:
     target = "binance_sandbox"
+    exchange = "binance"
+    market = "future"
 
     def __init__(
         self,
@@ -65,6 +69,7 @@ class BinanceSandboxBroker:
         session: requests.Session | None = None,
         timeout: float = 10.0,
         clock_ms: Callable[[], int] = _clock_ms,
+        conditional_order_api: str = "algo",
     ) -> None:
         if base_url.rstrip("/") not in _ALLOWED_BASE_URLS:
             raise ValueError("Binance sandbox broker only accepts allowlisted futures testnet URLs")
@@ -98,6 +103,26 @@ class BinanceSandboxBroker:
         self._active_protection: ProtectiveOrderIntent | None = None
         self._stop_revision = 0
         self._one_way_mode_verified = False
+        if conditional_order_api not in {"algo", "legacy"}:
+            raise ValueError("conditional_order_api must be algo or legacy")
+        self._conditional_order_api = conditional_order_api
+        self._algo_router = AlgoOrderRouter(self._signed_request)
+
+    def _order_request(self, method: str, path: str, params: dict[str, Any]) -> dict[str, Any]:
+        if self._conditional_order_api == "algo":
+            return self._algo_router.request(method, path, params)
+        return self._signed_request(method, path, params)
+
+    @property
+    def resolved_metadata(self) -> dict[str, object]:
+        return {
+            "version": "binance_sandbox_v2",
+            "conditional_order_api": self._conditional_order_api,
+            "execution_source": "venue_reported",
+            "exchange": self.exchange,
+            "market": self.market,
+            "protection_replacement": "accept_new_pair_before_canceling_old_pair",
+        }
 
     @property
     def pending(self) -> bool:
@@ -261,7 +286,7 @@ class BinanceSandboxBroker:
             intent.side,
             intent.session_id,
         )
-        ack = self._signed_request("POST", "/fapi/v1/order", params)
+        ack = self._order_request("POST", "/fapi/v1/order", params)
         order_ack = _ack_from_binance(intent.session_id, intent.client_order_id, ack, self.target)
         if order_ack.status == "filled":
             tracked = self._tracked_orders[intent.client_order_id]
@@ -334,7 +359,7 @@ class BinanceSandboxBroker:
                 intent.side,
                 intent.session_id,
             )
-            payload = self._signed_request("POST", "/fapi/v1/order", order)
+            payload = self._order_request("POST", "/fapi/v1/order", order)
             ack = _ack_from_binance(
                 intent.session_id, order["newClientOrderId"], payload, self.target
             )
@@ -375,6 +400,9 @@ class BinanceSandboxBroker:
         ):
             raise ValueError("stop update must remain inside the protective target")
         metadata = self.fetch_metadata(protection.symbol)
+        replacement = _normalize_protective_order(
+            replace(protection, stop_price=str(stop_price)), metadata
+        )
         validation = validate_order_against_metadata(
             BrokerOrderIntent(
                 session_id=protection.session_id,
@@ -385,7 +413,7 @@ class BinanceSandboxBroker:
                 order_type="market",
                 quantity=protection.quantity,
                 price=protection.target_price,
-                stop_price=str(stop_price),
+                stop_price=replacement.stop_price,
                 target_price=protection.target_price,
                 target=self.target,
                 role="stop",
@@ -394,6 +422,12 @@ class BinanceSandboxBroker:
         )
         if not validation.ok or validation.normalized_stop_price is None:
             raise ValueError(f"metadata validation failed: {validation.reason}")
+        validate_protection_update(
+            side=protection.side,
+            current_stop=protection.stop_price,
+            stop_price=validation.normalized_stop_price,
+            target_price=protection.target_price,
+        )
         self._stop_revision += 1
         client_order_id = make_client_order_id(
             protection.session_id,
@@ -408,7 +442,7 @@ class BinanceSandboxBroker:
             protection.side,
             protection.session_id,
         )
-        payload = self._signed_request(
+        payload = self._order_request(
             "POST",
             "/fapi/v1/order",
             {
@@ -422,15 +456,14 @@ class BinanceSandboxBroker:
             },
         )
         ack = _ack_from_binance(protection.session_id, client_order_id, payload, self.target)
-        if ack.status not in {"accepted", "filled"}:
-            self._forget_order(client_order_id)
-            return ack
+        if ack.status != "accepted":
+            raise RuntimeError("protective replacement was not confirmed working")
         self._active_protection = replace(
             protection,
             stop_client_order_id=client_order_id,
             stop_price=validation.normalized_stop_price,
         )
-        self._signed_request(
+        cancellation = self._order_request(
             "DELETE",
             "/fapi/v1/order",
             {
@@ -438,8 +471,12 @@ class BinanceSandboxBroker:
                 "origClientOrderId": protection.stop_client_order_id,
             },
         )
+        if str(cancellation.get("status", "")).upper() != "CANCELED":
+            raise RuntimeError("old protection cancellation was not confirmed")
         self._forget_order(protection.stop_client_order_id)
-        return ack
+        return replace(
+            ack, metadata={**ack.metadata, "stop_price": validation.normalized_stop_price}
+        )
 
     def poll_fills(self, session_id: str) -> list[BrokerFill]:
         fills = [fill for fill in self._queued_fills if fill.session_id == session_id]
@@ -447,7 +484,7 @@ class BinanceSandboxBroker:
         for client_order_id, tracked in sorted(self._tracked_orders.items()):
             if tracked.session_id != session_id:
                 continue
-            payload = self._signed_request(
+            payload = self._order_request(
                 "GET",
                 "/fapi/v1/order",
                 {
@@ -473,6 +510,78 @@ class BinanceSandboxBroker:
             }:
                 self._forget_order(client_order_id)
         return fills
+
+    def modify_protection(
+        self,
+        *,
+        stop_price: float | None = None,
+        target_price: float | None = None,
+    ) -> BrokerOrderAck:
+        protection = self._active_protection
+        if protection is None:
+            raise RuntimeError("no active protection to modify")
+        replacement = replace(
+            protection,
+            stop_price=protection.stop_price if stop_price is None else str(stop_price),
+            target_price=protection.target_price if target_price is None else str(target_price),
+        )
+        validate_protection_update(
+            side=protection.side,
+            current_stop=protection.stop_price,
+            stop_price=replacement.stop_price,
+            target_price=replacement.target_price,
+        )
+        replacement = _normalize_protective_order(
+            replacement, self.fetch_metadata(protection.symbol)
+        )
+        validate_protection_update(
+            side=protection.side,
+            current_stop=protection.stop_price,
+            stop_price=replacement.stop_price,
+            target_price=replacement.target_price,
+        )
+        self._stop_revision += 1
+        replacement = replace(
+            replacement,
+            stop_client_order_id=make_client_order_id(
+                protection.session_id, f"protect-stop-{self._stop_revision}", self.target, "stop"
+            ),
+            target_client_order_id=make_client_order_id(
+                protection.session_id,
+                f"protect-target-{self._stop_revision}",
+                self.target,
+                "target",
+            ),
+        )
+        # Keep both old reduce-only legs until both replacements are accepted.
+        # Any transport uncertainty leaves every submitted ID tracked so the
+        # engine's containment path can cancel and reconcile all of them.
+        acks = self.place_protection(replacement)
+        if len(acks) != 2 or any(ack.status != "accepted" for ack in acks):
+            raise RuntimeError("protective replacement was not confirmed working")
+        for identifier in (protection.stop_client_order_id, protection.target_client_order_id):
+            payload = self._order_request(
+                "DELETE",
+                "/fapi/v1/order",
+                {
+                    "symbol": self._normalize_symbol(protection.symbol),
+                    "origClientOrderId": identifier,
+                },
+            )
+            if str(payload.get("status", "")).upper() != "CANCELED":
+                raise RuntimeError("old protection cancellation was not confirmed")
+            self._forget_order(identifier)
+        return BrokerOrderAck(
+            protection.session_id,
+            replacement.stop_client_order_id,
+            None,
+            "accepted",
+            self.target,
+            metadata={
+                "stop_price": replacement.stop_price,
+                "target_price": replacement.target_price,
+            },
+        )
 
     def _annotate_venue_fees(self, fill: BrokerFill) -> BrokerFill:
         """Attach the venue commission and realized PnL of a completed fill.
@@ -530,6 +639,7 @@ class BinanceSandboxBroker:
     def _forget_order(self, client_order_id: str) -> None:
         self._tracked_orders.pop(client_order_id, None)
         self._cumulative_fills.pop(client_order_id, None)
+        self._algo_router.forget(client_order_id)
 
     def _apply_fill(self, fill: BrokerFill) -> None:
         quantity = _decimal_or_zero(fill.quantity)
@@ -584,6 +694,11 @@ class BinanceSandboxBroker:
     ) -> BrokerReconciliationReport:
         self._ensure_one_way_mode()
         for intent in intents:
+            if self._conditional_order_api == "algo" and (
+                intent.role in {"stop", "target"}
+                or intent.order_type.lower() in {"stop", "stop_market"}
+            ):
+                self._algo_router.track(intent.client_order_id)
             self._track_order(
                 intent.client_order_id,
                 intent.symbol,
@@ -597,6 +712,8 @@ class BinanceSandboxBroker:
         open_order_payloads = _as_list(
             self._signed_request("GET", "/fapi/v1/openOrders", {}).get("data", [])
         )
+        if self._conditional_order_api == "algo":
+            open_order_payloads.extend(self._algo_router.open_orders())
         open_orders: list[BrokerOrderAck] = []
         incidents: list[str] = []
         position_symbols = {position.symbol for position in positions}
@@ -656,7 +773,7 @@ class BinanceSandboxBroker:
         first_error: Exception | None = None
         for client_order_id, tracked in matching:
             try:
-                payload = self._signed_request(
+                payload = self._order_request(
                     "DELETE",
                     "/fapi/v1/order",
                     {
@@ -706,7 +823,7 @@ class BinanceSandboxBroker:
             position.side,
             session_id,
         )
-        payload = self._signed_request(
+        payload = self._order_request(
             "POST",
             "/fapi/v1/order",
             {

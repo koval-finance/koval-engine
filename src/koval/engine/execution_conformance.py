@@ -37,6 +37,7 @@ class ConformanceScenario:
     quantity: float = 1.0
     after_bar_actions: tuple[ConformanceAction, ...] = ()
     expected_outcome: str = "closed"
+    market: str = "future"
 
 
 @dataclass(frozen=True)
@@ -142,7 +143,36 @@ def generate_conformance_scenarios() -> tuple[ConformanceScenario, ...]:
             expected_outcome="rejected_insufficient_margin",
         ),
     )
-    return (*baseline, *state_transitions)
+    dynamic_targets = tuple(
+        ConformanceScenario(
+            scenario_id=f"{side}_market_dynamic_target",
+            side=side,
+            order_type="market",
+            entry_price=100,
+            stop_price=90 if side == "buy" else 110,
+            target_price=120 if side == "buy" else 80,
+            bars=((100, 106, 94, 100), (100, 106, 94, 100)),
+            coverage_tags=("market_entry", "dynamic_protection", "dynamic_target", "take_profit"),
+            after_bar_actions=(
+                ConformanceAction(0, "modify_target", 105 if side == "buy" else 95),
+            ),
+            expected_outcome="take_profit",
+        )
+        for side in ("buy", "sell")
+    )
+    spot_refusal = ConformanceScenario(
+        scenario_id="spot_short_rejected",
+        side="sell",
+        order_type="market",
+        entry_price=100,
+        stop_price=110,
+        target_price=90,
+        bars=((100, 101, 99, 100),),
+        coverage_tags=("spot_short_unsupported", "market_entry"),
+        market="spot",
+        expected_outcome="rejected_spot_short_unsupported",
+    )
+    return (*baseline, *state_transitions, *dynamic_targets, spot_refusal)
 
 
 def _numeric(value: Any) -> bool:

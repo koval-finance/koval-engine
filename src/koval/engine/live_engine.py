@@ -15,6 +15,7 @@ from dataclasses import dataclass, field, replace
 
 import numpy as np
 
+from koval._version import __version__
 from koval.engine.account_state import PlatformAccountState
 from koval.engine.broker import (
     Broker,
@@ -32,10 +33,19 @@ from koval.engine.higher_timeframe import confirmed_higher_timeframe_bars
 from koval.engine.history_window import DEFAULT_HISTORY_BARS
 from koval.engine.instrument_risk import InstrumentSpecEvidence, MarkPriceSeries
 from koval.engine.live_feed import LiveFeed, StopSignal
+from koval.engine.market_identity import resolve_market_identity
 from koval.engine.paper_broker import Fill, PaperBroker
 from koval.engine.paper_profile import resolve_paper_profile
+from koval.engine.run_identity import (
+    CandleStreamIdentity,
+    build_run_identity,
+    content_sha256,
+    execution_evidence_manifest,
+)
 from koval.exchanges.auth import safe_exception_message
 from koval.exchanges.base import timeframe_ms
+from koval.exchanges.execution_compatibility import compatibility_for
+from koval.exchanges.markets import canonical_market
 from koval.strategy.base.trade_setup import TradeSetup
 from koval.strategy.block_assembler import assemble_from_graph
 
@@ -58,6 +68,7 @@ class LiveEngineConfig:
     execution_proxy: ExecutionProxyConfig | None = None
     daily_baseline_equity: float | None = None
     peak_equity: float | None = None
+    exchange: str | None = None
 
 
 def _noop(_x: object) -> None:
@@ -317,7 +328,20 @@ class LiveEngine:
             instrument_specs=config.instrument_specs,
             mark_prices=config.mark_prices,
             execution_proxy=config.execution_proxy,
+            exchange=config.exchange,
         )
+        self._validate_broker_config(config)
+        exchange = config.exchange or getattr(self._broker, "exchange", None)
+        self._market_identity = (
+            resolve_market_identity(exchange=exchange, market=config.market, symbol=config.symbol)
+            if exchange is not None
+            else None
+        )
+        if exchange is not None:
+            compatibility_for(exchange, config.market, self._broker.target)
+        self._strategy_sha256 = content_sha256(graph)
+        self._primary_identity = CandleStreamIdentity(config.timeframe)
+        self._warmup_identity = CandleStreamIdentity(config.timeframe)
         broker_ledger = (
             getattr(self._broker, "ledger", None) if self._broker.target == "paper" else None
         )
@@ -345,6 +369,8 @@ class LiveEngine:
                 )
                 self._window.append(validated)
                 previous_timestamp_ms = int(validated[0])
+            for row in history[-config.max_window :]:
+                self._warmup_identity.append(row)
         self._on_event = on_event
         self._on_trade = on_trade
         self._on_bar = on_bar
@@ -364,6 +390,8 @@ class LiveEngine:
         self._partial_exit_commission = 0.0
         self._partial_exit_quantity = 0.0
         self._partial_exit_notional = 0.0
+        self._partial_exit_spread_cost = 0.0
+        self._partial_exit_slippage_cost = 0.0
         self._higher_timeframe_available = False
         self._last_entry_client_order_id = ""
         self._entries_halted = False
@@ -372,6 +400,59 @@ class LiveEngine:
         self._containment_attempted = False
         self._containment_in_progress = False
         self._containment_confirmed: bool | None = None
+
+    def _validate_broker_config(self, config: LiveEngineConfig) -> None:
+        if not isinstance(self._broker, PaperBroker):
+            return
+        self._broker.validate_market_context(exchange=config.exchange, symbol=config.symbol)
+        if self._broker.market != canonical_market(config.market):
+            raise ValueError("paper broker market does not match live config")
+        if config.execution is not None and self._broker.profile != self._profile:
+            raise ValueError("paper broker profile does not match live config")
+        self._profile = self._broker.profile
+        if config.exchange is not None and self._broker.exchange is not None:
+            if self._broker.exchange != config.exchange.strip().lower():
+                raise ValueError("paper broker exchange does not match live config")
+        requested = execution_evidence_manifest(
+            funding=config.funding,
+            fee_schedule=config.fee_schedule,
+            instrument_specs=config.instrument_specs,
+            mark_prices=config.mark_prices,
+            execution_proxy=config.execution_proxy,
+        )
+        for name, evidence in requested.items():
+            if (
+                evidence["status"] == "supplied"
+                and evidence != self._broker.execution_evidence[name]
+            ):
+                raise ValueError(f"paper broker evidence does not match live config: {name}")
+
+    def _run_identity(self) -> dict:
+        return build_run_identity(
+            market_identity=self._market_identity,
+            primary=self._primary_identity.as_dict(),
+            warmup=self._warmup_identity.as_dict(),
+            execution_profile=(
+                self._profile.as_config()
+                if self._broker.target == "paper"
+                else getattr(self._broker, "resolved_metadata", {"version": "unavailable"})
+            ),
+            execution_evidence=getattr(
+                self._broker, "execution_evidence", execution_evidence_manifest()
+            ),
+            strategy_sha256=self._strategy_sha256,
+            run_parameters={
+                "initial_capital": self._config.initial_capital,
+                "max_window": self._config.max_window,
+                "higher_timeframe": self._config.higher_timeframe,
+                "requires_higher_timeframe": self._config.requires_higher_timeframe,
+                "daily_baseline_equity": self._config.daily_baseline_equity,
+                "peak_equity": self._config.peak_equity,
+                "end_of_data_policy": "flatten_at_last_close",
+            },
+            engine_version=__version__,
+            execution_mode=self._broker.target,
+        )
 
     @property
     def profile(self):
@@ -439,6 +520,7 @@ class LiveEngine:
         ts, o, h, low, c, v = (int(row[0]), *(float(x) for x in row[1:6]))
         self._bar_index += 1
         self._window.append(row)
+        self._primary_identity.append(row)
         process_bar = getattr(self._broker, "process_bar", None)
         paper_fills = (
             process_bar(ts_ms=ts, open=o, high=h, low=low, close=c, volume=v)
@@ -481,23 +563,47 @@ class LiveEngine:
         ):
             self._try_enter(ts, c)
         elif self._broker_position() is not None:
-            new_sl = self._strategy.on_sl_update(self._trade_id)
-            if new_sl is not None:
-                modify_stop = getattr(self._broker, "modify_stop", None)
-                if modify_stop is None:
-                    self._contain_exposure("dynamic_stop_unsupported")
-                    raise RuntimeError("broker cannot apply a dynamic protection update")
-                try:
-                    ack = modify_stop(new_sl)
-                except Exception:
-                    self._contain_exposure("dynamic_stop_failed")
-                    raise
-                if ack is not None and ack.status not in {"accepted", "filled"}:
-                    self._contain_exposure("dynamic_stop_rejected")
-                    raise RuntimeError("broker rejected the dynamic protection update")
-                self._account.on_stop_update(new_sl)
+            self._update_protection()
         self._emit_bar(ts, o, h, low, c)
         self._emit_status()
+
+    def _update_protection(self) -> None:
+        # Snapshot both hooks before touching either leg of a possible OCO pair.
+        new_sl = self._strategy.on_sl_update(self._trade_id)
+        new_tp = getattr(self._strategy, "on_tp_update", lambda _: None)(self._trade_id)
+        if new_sl is None and new_tp is None:
+            return
+        reason = "dynamic_protection" if new_tp is not None else "dynamic_stop"
+        method = getattr(
+            self._broker, "modify_protection" if new_tp is not None else "modify_stop", None
+        )
+        if method is None:
+            self._contain_exposure(f"{reason}_unsupported")
+            raise RuntimeError("broker cannot apply a dynamic protection update")
+        try:
+            ack = (
+                method(stop_price=new_sl, target_price=new_tp)
+                if new_tp is not None
+                else method(new_sl)
+            )
+        except Exception:
+            self._contain_exposure(f"{reason}_failed")
+            raise
+        if ack is not None and ack.status not in {"accepted", "filled"}:
+            self._contain_exposure(f"{reason}_rejected")
+            raise RuntimeError("broker rejected the dynamic protection update")
+        if new_sl is not None:
+            position = self._broker_position()
+            actual_stop = getattr(position, "stop_price", new_sl)
+            if ack is not None:
+                actual_stop = float(ack.metadata.get("stop_price", actual_stop))
+            self._account.on_stop_update(actual_stop)
+        if self._open_setup is not None:
+            if new_tp is not None:
+                actual_target = getattr(self._broker_position(), "target_price", new_tp)
+                if ack is not None:
+                    actual_target = ack.metadata.get("target_price", actual_target)
+                self._open_setup.take_profit = float(actual_target)
 
     def _try_enter(self, ts: int, close: float) -> None:
         direction = None
@@ -549,12 +655,10 @@ class LiveEngine:
         if (
             self._broker.target == "paper"
             and ack.status == "rejected"
-            and ack.metadata.get("reason") == "insufficient_margin"
+            and ack.metadata.get("reason") in {"insufficient_margin", "spot_short_unsupported"}
         ):
-            # An affordability rejection is an event, not a session halt: the
-            # strategy keeps running and may size a smaller entry later. This
-            # soft path is the paper broker's alone; any other broker's
-            # rejection falls through to the halt below.
+            # Deterministic paper refusals leave the strategy free to submit a
+            # later affordable/permitted entry. Unknown venue state still halts.
             self._external_entry_pending = False
             self._pending_setup = None
             self._emit(
@@ -564,7 +668,7 @@ class LiveEngine:
                     "entry_type": setup.entry_type,
                     "size": setup.size,
                     "price": setup.entry_price,
-                    "reason": "insufficient_margin",
+                    "reason": ack.metadata["reason"],
                 },
             )
             return
@@ -774,6 +878,8 @@ class LiveEngine:
         self._partial_exit_commission += fill.commission
         self._partial_exit_quantity += fill.quantity
         self._partial_exit_notional += fill.price * fill.quantity
+        self._partial_exit_spread_cost += fill.spread_cost
+        self._partial_exit_slippage_cost += fill.slippage_cost
 
     def _process_external_fill(self, fill: BrokerFill) -> None:
         if fill.role == "entry":
@@ -988,6 +1094,8 @@ class LiveEngine:
         self._partial_exit_commission = 0.0
         self._partial_exit_quantity = 0.0
         self._partial_exit_notional = 0.0
+        self._partial_exit_spread_cost = 0.0
+        self._partial_exit_slippage_cost = 0.0
         self._emit(
             EventType.TRADE_CLOSED,
             {
@@ -1039,9 +1147,12 @@ class LiveEngine:
             "commission": entry_commission + exit_commission,
             "liquidation_fee": fill.liquidation_fee,
             "execution_costs": {
-                "spread_cost": (entry.spread_cost if entry is not None else 0.0) + fill.spread_cost,
+                "spread_cost": (entry.spread_cost if entry is not None else 0.0)
+                + fill.spread_cost
+                + self._partial_exit_spread_cost,
                 "slippage_cost": (entry.slippage_cost if entry is not None else 0.0)
-                + fill.slippage_cost,
+                + fill.slippage_cost
+                + self._partial_exit_slippage_cost,
                 "commission": entry_commission + exit_commission,
                 "liquidation_fee": fill.liquidation_fee,
             },
@@ -1058,6 +1169,7 @@ class LiveEngine:
             "execution_profile": getattr(
                 self._broker, "resolved_metadata", self._profile.as_config()
             ),
+            "run_identity": self._run_identity(),
         }
 
     def _finalize(self, *, require_confirmation: bool = True) -> None:
@@ -1292,6 +1404,7 @@ class LiveEngine:
                     ),
                 },
                 "bars_processed": self._bar_index,
+                "run_identity": self._run_identity(),
                 "execution_profile": getattr(
                     self._broker, "resolved_metadata", self._profile.as_config()
                 ),

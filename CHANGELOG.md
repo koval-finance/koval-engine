@@ -6,6 +6,73 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-09-11
+
+### Added
+
+- `scripts/check_dist.py` — a release gate that fails when a built wheel or
+  source distribution does not carry this tree's `src/koval` sources, or names
+  a version the tree is not at. The release workflow runs it between
+  `python -m build` and the artifact upload; the default test suite runs it
+  against a local `dist/`, so a stale build cannot be installed or measured as
+  if it were the release.
+
+### Changed
+
+- Publish the MIT `koval_runtime_v2` and `koval_run_identity_v1` contracts,
+  canonical market identity (`spot` / `future`, with `spot` / `perpetual`
+  contract types), streaming identities for actual candles and warm-up, and
+  content hashes for execution evidence. Paper statuses and trades record
+  identity and a reproducibility grade; an unknown venue stays not comparable.
+- `SandboxBrokerConfig` accepts and forwards funding, fees, instrument specs,
+  mark prices and the execution proxy. Injected paper brokers are checked
+  against explicit live configuration before a session starts.
+- Binance sandbox defaults to the current conditional Algo Service API.
+  Conditional triggers are followed to their actual child orders for fills and
+  fees; cancellation is verified, and reconciliation includes algo open orders.
+  The previous wire protocol remains an explicit `conditional_order_api="legacy"`
+  option. No production origin or execution mode was added.
+- Release source verification now requires artifacts in CI; local empty `dist/`
+  checks remain allowed. The roadmap and public runtime/review documentation
+  ship in the source distribution.
+
+### Fixed
+
+- Honor `on_tp_update` alongside stop updates. Validate both requested legs
+  before replacement; targets may move either way while stops cannot widen risk.
+  Paper applies changes after the current bar; sandbox accepts a replacement
+  pair before canceling the previous reduce-only pair and contains uncertainty.
+- Normalize stop-only paper updates against instrument evidence. Sandbox stop
+  updates report the accepted price and require confirmed replacement/cancellation;
+  an immediate fill or uncertain cancellation retains identifiers for containment.
+- Reject spot shorts with `spot_short_unsupported` and continue the paper
+  session, allowing later permitted entries. Reject spot leverage at the direct
+  broker boundary as well as the factory.
+- Enforce candle evidence request bounds, timeframe alignment, venue and source.
+  Reject a run that outlives its supplied funding coverage, non-unit contract
+  multipliers in base-quantity accounting, mismatched named-symbol fee currency,
+  and fee evidence on a cost-free legacy profile.
+- Reject nonzero cancellation/replacement latency, which previously appeared in
+  metadata without changing execution. Other supported timing assumptions remain
+  available in the OHLCV execution proxy.
+- Preserve spread and slippage attribution across all partial-exit deltas.
+- Publish three additional shared regression fixtures: long/short target
+  replacement and spot-short refusal; extend the deterministic conformance matrix.
+  Existing fixture bytes and v1 matching arithmetic are unchanged.
+
+### Compatibility and validation
+
+- `ENGINE_PROTOCOL_VERSION` remains 1. Existing paper profile names and the
+  legacy default remain. Runtime defect fixes are identified by package 0.11.0
+  and `koval_runtime_v2`; replay older results with their recorded package version.
+- The engine remains MIT with the same six runtime dependencies. No application
+  or GPL plugin implementation is included. Read
+  [the runtime contract](agents_docs/runtime_contract.md) for plugin migration and
+  [the review](agents_docs/realism_review.md) for sources and remaining acceptance.
+- Automated verification uses mocked HTTP. A compatible plugin release and a
+  supervised authenticated Binance testnet acceptance run remain separate gates;
+  an OHLCV simulation does not guarantee production exchange fills or returns.
+
 ## [0.10.0] - 2026-09-10
 
 ### Added
@@ -171,6 +238,7 @@ First public release.
 - The MIT/GPL boundary is enforced by a test rather than by convention: no file in this package may import Backtrader.
 - Releases are published to PyPI through Trusted Publishing (OIDC) with PEP 740 attestations. No long-lived PyPI credential is used in CI.
 
-[Unreleased]: https://github.com/koval-finance/koval-engine/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/koval-finance/koval-engine/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/koval-finance/koval-engine/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/koval-finance/koval-engine/releases/tag/v0.10.0
 [0.9.0]: https://github.com/koval-finance/koval-engine/releases/tag/v0.9.0

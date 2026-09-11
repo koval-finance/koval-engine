@@ -38,7 +38,7 @@ def test_full_miss_fetches_from_adapter_and_persists(cache, fake_adapter_factory
 
 
 def test_evidence_get_returns_archive_ready_identity(cache, fake_adapter_factory):
-    start = 1_700_000_000_000
+    start = 1_700_000_000_000 // 60_000 * 60_000
     adapter = fake_adapter_factory(_candles(start, 2), exchange="binance", market="future")
 
     dataset = cache.get_evidence(

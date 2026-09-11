@@ -149,3 +149,15 @@ class Broker(Protocol):
 
     def modify_stop(self, stop_price: float) -> BrokerOrderAck | None:
         """Replace the active protective stop without increasing exposure."""
+
+    def modify_protection(
+        self,
+        *,
+        stop_price: float | None = None,
+        target_price: float | None = None,
+    ) -> BrokerOrderAck | None:
+        """Validate both legs together and replace the protective snapshot.
+
+        Paper applies the snapshot after bar matching. Sandbox replacement is
+        supervised, not exchange-atomic; any uncertain outcome requires containment.
+        """

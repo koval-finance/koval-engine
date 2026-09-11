@@ -85,6 +85,9 @@ from koval.engine.paper_fills import (
     required_margin,
 )
 from koval.engine.paper_profile import PAPER_LEGACY_VERSION, PaperExecutionProfile
+from koval.engine.protection import validate_protection_update
+from koval.engine.run_identity import execution_evidence_manifest
+from koval.exchanges.execution_compatibility import assert_supported_market
 from koval.exchanges.markets import canonical_market
 
 _MARKET_ORDER_TYPES = frozenset({"market"})
@@ -144,7 +147,11 @@ class BrokerPosition:
 
 
 class PaperOrderRejected(ValueError):
-    """Raised when the fixed-cost profile cannot afford an entry."""
+    """A deterministic order refusal that leaves the session available."""
+
+    def __init__(self, detail: str, *, reason: str = "insufficient_margin") -> None:
+        super().__init__(detail)
+        self.reason = reason
 
 
 @dataclass
@@ -178,6 +185,7 @@ class PaperBroker:
         instrument_specs: tuple[InstrumentSpecEvidence, ...] = (),
         mark_prices: MarkPriceSeries | None = None,
         execution_proxy: ExecutionProxyConfig | None = None,
+        exchange: str | None = None,
     ) -> None:
         try:
             balance = float(starting_balance)
@@ -194,8 +202,13 @@ class PaperBroker:
         self._deferred_exit: tuple[Fill, BrokerPosition, str] | None = None
         self._profile = profile or PaperExecutionProfile(PAPER_LEGACY_VERSION)
         self._market = canonical_market(market)
+        self._exchange = None if exchange is None else assert_supported_market(exchange, market)[0]
+        if self._market == "spot" and self._profile.leverage != 1:
+            raise ValueError("spot leverage must be exactly one")
         self._funding = funding
         self._fee_schedule = fee_schedule
+        if fee_schedule is not None and not self._profile.is_costed:
+            raise ValueError("fee evidence requires a costed paper profile")
         self._instrument_specs = tuple(instrument_specs)
         self._mark_prices = mark_prices
         if funding is not None and funding.market != self._market:
@@ -206,6 +219,8 @@ class PaperBroker:
             raise ValueError("paper broker requires complete mark-price evidence")
         if any(spec.market != self._market for spec in self._instrument_specs):
             raise ValueError("instrument evidence market does not match paper market")
+        if any(Decimal(str(spec.contract_size)) != 1 for spec in self._instrument_specs):
+            raise ValueError("paper base-quantity accounting requires contract_size=1")
         evidence_exchanges = {
             value.strip().lower()
             for value in (
@@ -217,6 +232,9 @@ class PaperBroker:
         }
         if len(evidence_exchanges) > 1:
             raise ValueError("paper execution evidence exchange mismatch")
+        if self._exchange is not None and evidence_exchanges - {self._exchange}:
+            raise ValueError("paper execution evidence exchange mismatch")
+        self._evidence_exchanges = frozenset(evidence_exchanges)
         self._evidence_symbols = {
             self._canonical_symbol(value)
             for value in (
@@ -230,7 +248,18 @@ class PaperBroker:
             raise ValueError("paper execution evidence symbol mismatch")
         if execution_proxy is not None and self._profile.ambiguity_policy is None:
             raise ValueError("partial execution proxy requires paper_ohlcv_realistic_v2")
+        if execution_proxy is not None and (
+            execution_proxy.latency.cancellation_ms or execution_proxy.latency.replacement_ms
+        ):
+            raise ValueError("paper cancellation and replacement latency are not supported")
         self._execution_proxy = execution_proxy
+        self._execution_evidence = execution_evidence_manifest(
+            funding=funding,
+            fee_schedule=fee_schedule,
+            instrument_specs=instrument_specs,
+            mark_prices=mark_prices,
+            execution_proxy=execution_proxy,
+        )
         self._exit_cumulative_quantity = 0.0
         self._last_funding_timestamp_ms: int | None = None
         self._funding_cursor = 0
@@ -251,11 +280,61 @@ class PaperBroker:
         return self._profile
 
     @property
+    def market(self) -> str:
+        return self._market
+
+    @property
+    def exchange(self) -> str | None:
+        return self._exchange
+
+    @property
+    def execution_evidence(self) -> dict[str, dict]:
+        return {key: dict(value) for key, value in self._execution_evidence.items()}
+
+    def validate_market_context(self, *, exchange: str | None, symbol: str) -> None:
+        if exchange is not None:
+            venue, _ = assert_supported_market(exchange, self._market)
+            if self._evidence_exchanges - {venue} or self._exchange not in {None, venue}:
+                raise ValueError("paper execution evidence exchange mismatch")
+        if self._evidence_symbols and self._canonical_symbol(symbol) not in self._evidence_symbols:
+            raise ValueError("paper execution evidence symbol mismatch")
+        self._validate_fee_currency(symbol)
+
+    def _validate_fee_currency(self, symbol: str) -> None:
+        schedule = self._fee_schedule
+        if schedule is None or schedule.currency == "quote" or not symbol:
+            return
+        canonical = self._canonical_symbol(symbol)
+        quote = next(
+            (
+                currency
+                for currency in (
+                    "FDUSD",
+                    "USDT",
+                    "USDC",
+                    "TUSD",
+                    "BUSD",
+                    "BTC",
+                    "ETH",
+                    "EUR",
+                    "USD",
+                )
+                if canonical.endswith(currency)
+            ),
+            None,
+        )
+        if self._exchange == "whitebit" and canonical.endswith("PERP"):
+            quote = "USDT"
+        if schedule.currency != quote:
+            raise ValueError("paper fee currency must match the instrument quote currency")
+
+    @property
     def resolved_metadata(self) -> dict[str, object]:
         metadata: dict[str, object] = {
             **self._profile.as_config(),
             "ambiguities": list(self._ambiguities),
             "funding_status": "historical" if self._funding is not None else "unavailable",
+            "execution_evidence": self.execution_evidence,
         }
         if self._profile.is_costed:
             schedule = self._fee_schedule
@@ -452,13 +531,17 @@ class PaperBroker:
         stop_price = float(stop_price)
         target_price = float(target_price)
         quantity = float(quantity)
+        self._validate_fee_currency(symbol)
         if symbol and self._evidence_symbols:
             if self._canonical_symbol(symbol) not in self._evidence_symbols:
                 raise ValueError("paper execution evidence symbol mismatch")
         if side not in {"buy", "sell"}:
             raise ValueError("invalid paper order: side must be 'buy' or 'sell'")
         if self._market == "spot" and side == "sell":
-            raise ValueError("spot paper execution does not support short entries")
+            raise PaperOrderRejected(
+                "spot paper execution does not support short entries",
+                reason="spot_short_unsupported",
+            )
         if order_type not in _MARKET_ORDER_TYPES | _LIMIT_ORDER_TYPES | _STOP_ORDER_TYPES:
             raise ValueError("invalid paper order: unsupported order type")
         values = (entry_price, stop_price, target_price, quantity)
@@ -527,7 +610,7 @@ class PaperBroker:
                 exchange_order_id=None,
                 status="rejected",
                 target=self.target,
-                metadata={"paper": True, "reason": "insufficient_margin", "detail": str(exc)},
+                metadata={"paper": True, "reason": exc.reason, "detail": str(exc)},
             )
         return BrokerOrderAck(
             session_id=intent.session_id,
@@ -690,19 +773,45 @@ class PaperBroker:
 
     def modify_stop(self, new_stop: float) -> None:
         if self._position is not None:
-            p = self._position
-            new_stop = float(new_stop)
-            if not math.isfinite(new_stop) or new_stop <= 0:
-                raise ValueError("stop update must be positive and finite")
-            if (p.side == "buy" and new_stop < p.stop_price) or (
-                p.side == "sell" and new_stop > p.stop_price
-            ):
-                raise ValueError("stop update must tighten protection, not increase risk")
-            if (p.side == "buy" and new_stop >= p.target_price) or (
-                p.side == "sell" and new_stop <= p.target_price
-            ):
-                raise ValueError("stop update must remain inside the protective target")
-            self._position = replace(p, stop_price=new_stop)
+            self.modify_protection(stop_price=new_stop)
+
+    def modify_protection(
+        self,
+        *,
+        stop_price: float | None = None,
+        target_price: float | None = None,
+    ) -> None:
+        p = self._position
+        if p is None:
+            raise ValueError("no active protection to modify")
+        stop = p.stop_price if stop_price is None else float(stop_price)
+        target = p.target_price if target_price is None else float(target_price)
+        if self._instrument_specs:
+            spec = select_instrument_spec(
+                self._instrument_specs, timestamp_ms=self._last_timestamp_ms
+            )
+            stop, target = (
+                float(
+                    normalize_order(
+                        spec,
+                        side="sell" if p.side == "buy" else "buy",
+                        order_type="stop",
+                        quantity=Decimal(str(p.quantity)),
+                        price=Decimal(str(price)),
+                        reference_price=Decimal(str(self._last_close)),
+                    ).price
+                )
+                for price in (stop, target)
+            )
+        validate_protection_update(
+            side=p.side,
+            current_stop=p.stop_price,
+            stop_price=stop,
+            target_price=target,
+        )
+        self._position = replace(p, stop_price=stop, target_price=target)
+        if self._pending is not None:
+            self._pending = replace(self._pending, stop_price=stop, target_price=target)
 
     def place_protection(self, intent: ProtectiveOrderIntent) -> list[BrokerOrderAck]:
         reference = self._validate_protection_intent(intent)
@@ -789,6 +898,16 @@ class PaperBroker:
             )
         if quantity != reference.quantity:
             raise ValueError("invalid protective order: quantity does not match the position")
+        if reference.stop_client_order_id and reference.target_client_order_id:
+            # Resizing an already-protected partial position must preserve a
+            # profit-locking stop even when it lies beyond the average entry.
+            validate_protection_update(
+                side=reference.side,
+                current_stop=reference.stop_price,
+                stop_price=stop_price,
+                target_price=target_price,
+            )
+            return reference
         if intent.side == "buy":
             if stop_price < reference.stop_price:
                 raise ValueError("invalid protective order: stop must not increase position risk")
@@ -971,6 +1090,8 @@ class PaperBroker:
     def _settle_funding(self, timestamp_ms: int) -> None:
         if self._funding is None:
             return
+        if not self._funding.requested_start_ms <= timestamp_ms <= self._funding.requested_end_ms:
+            raise ValueError("funding evidence does not cover the bar timestamp")
         # Resume where the last bar stopped. Rescanning from the first record
         # every bar would make a run quadratic in the number of settlements.
         records = self._funding.records

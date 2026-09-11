@@ -9,12 +9,17 @@ from koval.exchanges.binance_sandbox import BinanceSandboxBroker, ClockSkewExcee
 
 
 def test_constructor_defaults_to_futures_testnet_and_rejects_production_url():
-    broker = BinanceSandboxBroker(api_key="key", api_secret="secret")
+    broker = BinanceSandboxBroker(
+        conditional_order_api="legacy", api_key="key", api_secret="secret"
+    )
     assert broker.base_url == "https://testnet.binancefuture.com"
 
     try:
         BinanceSandboxBroker(
-            api_key="key", api_secret="secret", base_url="https://fapi.binance.com"
+            conditional_order_api="legacy",
+            api_key="key",
+            api_secret="secret",
+            base_url="https://fapi.binance.com",
         )
     except ValueError as exc:
         assert "testnet" in str(exc)
@@ -34,7 +39,7 @@ def test_constructor_defaults_to_futures_testnet_and_rejects_production_url():
 )
 def test_constructor_rejects_invalid_credentials_and_timeout(kwargs):
     with pytest.raises(ValueError):
-        BinanceSandboxBroker(**kwargs)
+        BinanceSandboxBroker(conditional_order_api="legacy", **kwargs)
 
 
 @responses.activate
@@ -59,7 +64,9 @@ def test_fetch_metadata_maps_exchange_info_filters():
             ]
         },
     )
-    broker = BinanceSandboxBroker(api_key="key", api_secret="secret")
+    broker = BinanceSandboxBroker(
+        conditional_order_api="legacy", api_key="key", api_secret="secret"
+    )
 
     metadata = broker.fetch_metadata("BTCUSDT")
 
@@ -105,7 +112,9 @@ def test_submit_entry_sends_signed_order_without_secret_in_ack_metadata():
         },
     )
     _no_venue_fees()
-    broker = BinanceSandboxBroker(api_key="key", api_secret="secret")
+    broker = BinanceSandboxBroker(
+        conditional_order_api="legacy", api_key="key", api_secret="secret"
+    )
 
     ack = broker.submit_entry(
         BrokerOrderIntent(
@@ -139,7 +148,9 @@ def test_signed_transport_error_does_not_expose_signed_url_or_request_objects():
         json={"code": -1000, "msg": "failed"},
         status=500,
     )
-    broker = BinanceSandboxBroker(api_key="key-123", api_secret="secret-123")
+    broker = BinanceSandboxBroker(
+        conditional_order_api="legacy", api_key="key-123", api_secret="secret-123"
+    )
 
     with pytest.raises(requests.HTTPError) as captured:
         broker._signed_request(  # noqa: SLF001
@@ -170,6 +181,7 @@ def test_server_time_sync_measures_skew_and_corrects_signed_timestamp():
     )
     readings = iter([10_000, 10_020, 10_020])
     broker = BinanceSandboxBroker(
+        conditional_order_api="legacy",
         api_key="key",
         api_secret="secret",
         clock_ms=lambda: next(readings),
@@ -207,7 +219,9 @@ def test_submit_entry_validates_metadata_before_signed_order():
             ]
         },
     )
-    broker = BinanceSandboxBroker(api_key="key", api_secret="secret")
+    broker = BinanceSandboxBroker(
+        conditional_order_api="legacy", api_key="key", api_secret="secret"
+    )
 
     try:
         broker.submit_entry(
@@ -252,7 +266,9 @@ def test_submit_entry_sends_metadata_normalized_values():
         },
     )
     _no_venue_fees()
-    broker = BinanceSandboxBroker(api_key="key", api_secret="secret")
+    broker = BinanceSandboxBroker(
+        conditional_order_api="legacy", api_key="key", api_secret="secret"
+    )
 
     broker.submit_entry(
         BrokerOrderIntent(
@@ -306,7 +322,9 @@ def test_place_protection_cancel_all_and_poll_fills_use_expected_endpoints():
             "https://testnet.binancefuture.com/fapi/v1/order",
             json={"status": "CANCELED", "clientOrderId": client_order_id},
         )
-    broker = BinanceSandboxBroker(api_key="key", api_secret="secret")
+    broker = BinanceSandboxBroker(
+        conditional_order_api="legacy", api_key="key", api_secret="secret"
+    )
 
     protection = broker.place_protection(
         ProtectiveOrderIntent(
@@ -355,7 +373,9 @@ def test_poll_fills_deduplicates_unchanged_order_state():
         json=filled_payload,
     )
     _no_venue_fees()
-    broker = BinanceSandboxBroker(api_key="key", api_secret="secret")
+    broker = BinanceSandboxBroker(
+        conditional_order_api="legacy", api_key="key", api_secret="secret"
+    )
     broker._track_order(  # noqa: SLF001 - seed tracked order for poll test
         "kv-entry", "BTCUSDT", "entry", "buy", "s1"
     )
@@ -383,7 +403,9 @@ def test_poll_fills_never_queries_or_relabels_another_sessions_orders():
         },
     )
     _no_venue_fees()
-    broker = BinanceSandboxBroker(api_key="key", api_secret="secret")
+    broker = BinanceSandboxBroker(
+        conditional_order_api="legacy", api_key="key", api_secret="secret"
+    )
     broker._track_order(  # noqa: SLF001
         "session-one-entry", "BTCUSDT", "entry", "buy", "session-1"
     )
@@ -424,7 +446,9 @@ def test_reconcile_records_open_binance_position():
         "https://testnet.binancefuture.com/fapi/v1/openOrders",
         json=[],
     )
-    broker = BinanceSandboxBroker(api_key="key", api_secret="secret")
+    broker = BinanceSandboxBroker(
+        conditional_order_api="legacy", api_key="key", api_secret="secret"
+    )
 
     report = broker.reconcile("s1", [])
 
@@ -472,7 +496,9 @@ def test_reconcile_does_not_adopt_even_a_protected_existing_position():
             },
         ],
     )
-    broker = BinanceSandboxBroker(api_key="key", api_secret="secret")
+    broker = BinanceSandboxBroker(
+        conditional_order_api="legacy", api_key="key", api_secret="secret"
+    )
 
     report = broker.reconcile("s1", [])
 
@@ -498,7 +524,9 @@ def test_place_protection_and_cancel_all_normalize_slashed_symbol():
             "https://testnet.binancefuture.com/fapi/v1/order",
             json={"status": "CANCELED", "clientOrderId": client_order_id},
         )
-    broker = BinanceSandboxBroker(api_key="key", api_secret="secret")
+    broker = BinanceSandboxBroker(
+        conditional_order_api="legacy", api_key="key", api_secret="secret"
+    )
 
     broker.place_protection(
         ProtectiveOrderIntent(
@@ -532,7 +560,9 @@ def test_cancel_all_only_cancels_orders_owned_by_the_requested_session():
         "https://testnet.binancefuture.com/fapi/v1/order",
         json={"status": "CANCELED", "clientOrderId": "session-one-stop"},
     )
-    broker = BinanceSandboxBroker(api_key="key", api_secret="secret")
+    broker = BinanceSandboxBroker(
+        conditional_order_api="legacy", api_key="key", api_secret="secret"
+    )
     broker._track_order(  # noqa: SLF001
         "session-one-stop", "BTCUSDT", "stop", "buy", "session-1"
     )
@@ -563,7 +593,9 @@ def test_cancel_all_preserves_final_fill_delta_from_cancel_response():
             "updateTime": 123,
         },
     )
-    broker = BinanceSandboxBroker(api_key="key", api_secret="secret")
+    broker = BinanceSandboxBroker(
+        conditional_order_api="legacy", api_key="key", api_secret="secret"
+    )
     broker._track_order(  # noqa: SLF001
         "session-one-entry", "BTCUSDT", "entry", "buy", "session-1"
     )
@@ -607,7 +639,9 @@ def test_flatten_places_reduce_only_market_order_for_open_position():
             "updateTime": 123,
         },
     )
-    broker = BinanceSandboxBroker(api_key="key", api_secret="secret")
+    broker = BinanceSandboxBroker(
+        conditional_order_api="legacy", api_key="key", api_secret="secret"
+    )
 
     ack = broker.flatten("BTCUSDT", "s1")
     fills = broker.poll_fills("s1")
@@ -679,7 +713,9 @@ def _entry_intent():
 
 @responses.activate
 def test_submit_entry_rejects_working_entry_types_before_network():
-    broker = BinanceSandboxBroker(api_key="key", api_secret="secret")
+    broker = BinanceSandboxBroker(
+        conditional_order_api="legacy", api_key="key", api_secret="secret"
+    )
 
     for order_type in ("stop_market", "stop_limit"):
         with pytest.raises(ValueError, match="market, limit and stop"):
@@ -716,7 +752,9 @@ def test_market_entry_uses_result_response_and_queues_immediate_fill():
         },
     )
     _no_venue_fees()
-    broker = BinanceSandboxBroker(api_key="key", api_secret="secret")
+    broker = BinanceSandboxBroker(
+        conditional_order_api="legacy", api_key="key", api_secret="secret"
+    )
 
     ack = broker.submit_entry(_entry_intent())
     fills = broker.poll_fills("s1")
@@ -770,7 +808,9 @@ def test_market_entry_and_protection_are_direction_safely_normalized():
         json={"orderId": 125, "status": "NEW", "clientOrderId": "kv-target"},
     )
     _no_venue_fees()
-    broker = BinanceSandboxBroker(api_key="key", api_secret="secret")
+    broker = BinanceSandboxBroker(
+        conditional_order_api="legacy", api_key="key", api_secret="secret"
+    )
     intent = BrokerOrderIntent(
         session_id="s1",
         intent_id="i1",
@@ -821,7 +861,9 @@ def test_hedge_mode_blocks_entry_before_order_submission():
         "https://testnet.binancefuture.com/fapi/v1/positionSide/dual",
         json={"dualSidePosition": True},
     )
-    broker = BinanceSandboxBroker(api_key="key", api_secret="secret")
+    broker = BinanceSandboxBroker(
+        conditional_order_api="legacy", api_key="key", api_secret="secret"
+    )
 
     with pytest.raises(RuntimeError, match="one-way"):
         broker.submit_entry(_entry_intent())
@@ -846,7 +888,9 @@ def test_poll_fills_queries_by_symbol_and_tracks_position_state():
         },
     )
     _no_venue_fees()
-    broker = BinanceSandboxBroker(api_key="key", api_secret="secret")
+    broker = BinanceSandboxBroker(
+        conditional_order_api="legacy", api_key="key", api_secret="secret"
+    )
     broker._track_order("kv-entry", "BTCUSDT", "entry", "buy", "s1")  # noqa: SLF001
     fills = broker.poll_fills("s1")
 
@@ -877,7 +921,9 @@ def test_poll_fills_reports_incremental_quantity_for_partial_updates():
             },
         )
     _no_venue_fees()
-    broker = BinanceSandboxBroker(api_key="key", api_secret="secret")
+    broker = BinanceSandboxBroker(
+        conditional_order_api="legacy", api_key="key", api_secret="secret"
+    )
     broker._track_order("kv-entry", "BTCUSDT", "entry", "buy", "s1")  # noqa: SLF001
 
     first = broker.poll_fills("s1")
@@ -906,7 +952,9 @@ def test_equal_sized_partial_fill_deltas_are_each_delivered():
                 "updateTime": 123,
             },
         )
-    broker = BinanceSandboxBroker(api_key="key", api_secret="secret")
+    broker = BinanceSandboxBroker(
+        conditional_order_api="legacy", api_key="key", api_secret="secret"
+    )
     broker._track_order("kv-entry", "BTCUSDT", "entry", "buy", "s1")  # noqa: SLF001
 
     first = broker.poll_fills("s1")
@@ -957,7 +1005,9 @@ def test_protective_fill_preserves_position_side_and_role():
         },
     )
     _no_venue_fees()
-    broker = BinanceSandboxBroker(api_key="key", api_secret="secret")
+    broker = BinanceSandboxBroker(
+        conditional_order_api="legacy", api_key="key", api_secret="secret"
+    )
     broker.place_protection(
         ProtectiveOrderIntent(
             session_id="s1",
@@ -994,7 +1044,9 @@ def test_terminal_protection_failure_is_reported_and_untracked(exchange_status):
             "symbol": "BTCUSDT",
         },
     )
-    broker = BinanceSandboxBroker(api_key="key", api_secret="secret")
+    broker = BinanceSandboxBroker(
+        conditional_order_api="legacy", api_key="key", api_secret="secret"
+    )
     broker._track_order("kv-stop", "BTCUSDT", "stop", "buy", "s1")  # noqa: SLF001
 
     fills = broker.poll_fills("s1")
@@ -1024,7 +1076,9 @@ def test_reconcile_marks_unprotected_position_unsafe():
         "https://testnet.binancefuture.com/fapi/v1/openOrders",
         json=[],
     )
-    broker = BinanceSandboxBroker(api_key="key", api_secret="secret")
+    broker = BinanceSandboxBroker(
+        conditional_order_api="legacy", api_key="key", api_secret="secret"
+    )
 
     report = broker.reconcile("s1", [])
 
@@ -1055,7 +1109,9 @@ def test_reconcile_reports_working_entry_without_an_open_position_as_unsafe():
             }
         ],
     )
-    broker = BinanceSandboxBroker(api_key="key", api_secret="secret")
+    broker = BinanceSandboxBroker(
+        conditional_order_api="legacy", api_key="key", api_secret="secret"
+    )
 
     report = broker.reconcile("s1", [])
 
@@ -1078,7 +1134,9 @@ def test_rejected_exchange_status_is_not_reported_as_a_fill():
         "https://testnet.binancefuture.com/fapi/v1/order",
         json={"orderId": 123, "status": "REJECTED", "clientOrderId": "kv-entry"},
     )
-    broker = BinanceSandboxBroker(api_key="key", api_secret="secret")
+    broker = BinanceSandboxBroker(
+        conditional_order_api="legacy", api_key="key", api_secret="secret"
+    )
 
     ack = broker.submit_entry(_entry_intent())
 
@@ -1112,7 +1170,9 @@ def test_place_protection_rejects_invalid_intent_before_network(overrides):
         "target": "binance_sandbox",
     }
     values.update(overrides)
-    broker = BinanceSandboxBroker(api_key="key", api_secret="secret")
+    broker = BinanceSandboxBroker(
+        conditional_order_api="legacy", api_key="key", api_secret="secret"
+    )
 
     with pytest.raises(ValueError, match="protective order"):
         broker.place_protection(ProtectiveOrderIntent(**values))
@@ -1145,7 +1205,9 @@ def test_modify_stop_cancels_and_replaces_the_tracked_stop():
         "https://testnet.binancefuture.com/fapi/v1/order",
         json={"status": "CANCELED", "clientOrderId": "kv-stop"},
     )
-    broker = BinanceSandboxBroker(api_key="key", api_secret="secret")
+    broker = BinanceSandboxBroker(
+        conditional_order_api="legacy", api_key="key", api_secret="secret"
+    )
     broker.place_protection(
         ProtectiveOrderIntent(
             session_id="s1",
@@ -1182,7 +1244,9 @@ def test_modify_stop_keeps_existing_stop_when_replacement_transport_fails():
         "https://testnet.binancefuture.com/fapi/v1/order",
         body=requests.ConnectionError("replacement unavailable"),
     )
-    broker = BinanceSandboxBroker(api_key="key", api_secret="secret")
+    broker = BinanceSandboxBroker(
+        conditional_order_api="legacy", api_key="key", api_secret="secret"
+    )
     protection = ProtectiveOrderIntent(
         session_id="s1",
         entry_client_order_id="kv-entry",
@@ -1207,7 +1271,9 @@ def test_modify_stop_keeps_existing_stop_when_replacement_transport_fails():
 
 
 def test_modify_stop_rejects_a_change_that_increases_risk():
-    broker = BinanceSandboxBroker(api_key="key", api_secret="secret")
+    broker = BinanceSandboxBroker(
+        conditional_order_api="legacy", api_key="key", api_secret="secret"
+    )
     broker._active_protection = ProtectiveOrderIntent(  # noqa: SLF001
         session_id="s1",
         entry_client_order_id="kv-entry",
@@ -1255,7 +1321,9 @@ def test_limit_entry_is_sent_as_gtc_limit():
             "symbol": "BTCUSDT",
         },
     )
-    broker = BinanceSandboxBroker(api_key="key", api_secret="secret")
+    broker = BinanceSandboxBroker(
+        conditional_order_api="legacy", api_key="key", api_secret="secret"
+    )
 
     intent = BrokerOrderIntent(
         **{**_entry_intent().__dict__, "order_type": "limit", "price": "100.50"}
@@ -1287,7 +1355,9 @@ def test_stop_entry_is_sent_as_stop_market():
             "symbol": "BTCUSDT",
         },
     )
-    broker = BinanceSandboxBroker(api_key="key", api_secret="secret")
+    broker = BinanceSandboxBroker(
+        conditional_order_api="legacy", api_key="key", api_secret="secret"
+    )
 
     ack = broker.submit_entry(
         BrokerOrderIntent(**{**_entry_intent().__dict__, "order_type": "stop"})
@@ -1331,7 +1401,9 @@ def test_filled_entry_reads_commission_from_user_trades():
             }
         ],
     )
-    broker = BinanceSandboxBroker(api_key="key", api_secret="secret")
+    broker = BinanceSandboxBroker(
+        conditional_order_api="legacy", api_key="key", api_secret="secret"
+    )
 
     broker.submit_entry(_entry_intent())
     (fill,) = broker.poll_fills("s1")
@@ -1373,7 +1445,9 @@ def test_bnb_commission_is_recorded_but_not_converted():
             }
         ],
     )
-    broker = BinanceSandboxBroker(api_key="key", api_secret="secret")
+    broker = BinanceSandboxBroker(
+        conditional_order_api="legacy", api_key="key", api_secret="secret"
+    )
 
     broker.submit_entry(_entry_intent())
     (fill,) = broker.poll_fills("s1")
@@ -1433,7 +1507,9 @@ def test_commission_asset_uses_exchange_info_quote_asset_not_a_suffix_guess():
             }
         ],
     )
-    broker = BinanceSandboxBroker(api_key="key", api_secret="secret")
+    broker = BinanceSandboxBroker(
+        conditional_order_api="legacy", api_key="key", api_secret="secret"
+    )
     broker.submit_entry(BrokerOrderIntent(**{**_entry_intent().__dict__, "symbol": "BTCFDUSD"}))
     (fill,) = broker.poll_fills("s1")
 
@@ -1465,7 +1541,9 @@ def test_fetch_metadata_records_quote_asset():
                 ]
             },
         )
-        broker = BinanceSandboxBroker(api_key="key", api_secret="secret")
+        broker = BinanceSandboxBroker(
+            conditional_order_api="legacy", api_key="key", api_secret="secret"
+        )
         metadata = broker.fetch_metadata("BTCFDUSD")
 
     assert metadata.quote_asset == "FDUSD"
@@ -1507,7 +1585,9 @@ def test_margin_used_reflects_position_risk_leverage_after_entry():
             ]
         },
     )
-    broker = BinanceSandboxBroker(api_key="key", api_secret="secret")
+    broker = BinanceSandboxBroker(
+        conditional_order_api="legacy", api_key="key", api_secret="secret"
+    )
     assert broker.margin_used == 0.0
 
     broker.submit_entry(_entry_intent())
@@ -1523,7 +1603,9 @@ def test_a_host_clock_beyond_the_supported_skew_fails_closed():
         "https://testnet.binancefuture.com/fapi/v1/time",
         json={"serverTime": 10_000 + 120_000},
     )
-    broker = BinanceSandboxBroker(api_key="key", api_secret="secret", clock_ms=lambda: 10_000)
+    broker = BinanceSandboxBroker(
+        conditional_order_api="legacy", api_key="key", api_secret="secret", clock_ms=lambda: 10_000
+    )
 
     with pytest.raises(ClockSkewExceeded, match="clock_skew_exceeded"):
         broker.synchronize_clock()

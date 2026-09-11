@@ -91,7 +91,11 @@ class DeclarativeStrategy:
         return None
 
     def on_tp_update(self, trade_id: int) -> float | None:
-        """Return new TP price, or None to keep current."""
+        """Return a target after bar matching, or None to keep the current level.
+
+        Runtimes snapshot SL and TP hooks together. Targets may move in either
+        direction but must remain strictly beyond the final protective stop.
+        """
         return None
 
     @classmethod

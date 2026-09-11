@@ -9,6 +9,9 @@ For the typed-graph contracts specifically, see
 | Path | Owns |
 |---|---|
 | `src/koval/engine/backtest_engine.py` | the plugin protocol plus versioned execution-capability negotiation |
+| `src/koval/engine/market_identity.py`, `run_identity.py` | canonical market vocabulary, evidence content hashes, and actual-input run identity |
+| `src/koval/engine/protection.py` | shared validation of a dynamic protective-bracket snapshot |
+| `src/koval/exchanges/binance_algo.py` | conditional-order translation and actual child-order lookup through the sandbox transport |
 | `src/koval/engine/live_engine.py` | the bar loop for paper and sandbox sessions |
 | `src/koval/engine/live_feed.py` | replay/polling feeds, continuity checks, bounded outage retries, and between-bar supervision |
 | `src/koval/engine/paper_broker.py` | simulated bracket/OCO fills with pessimistic ambiguous-bar resolution |
@@ -104,6 +107,11 @@ It establishes deterministic contract parity, not historical order-book parity.
 The current liquidation primitive is deliberately limited to one cross-margin
 position using quote-currency collateral; isolated and portfolio margin require
 separately versioned evidence and behavior.
+
+The 0.11 runtime calls both dynamic protection hooks after matching each bar.
+Its shared vocabulary, evidence transport, identity encoding, spot-refusal policy,
+and plugin adoption rules are specified in [runtime_contract.md](runtime_contract.md).
+Review findings and source rationale are in [realism_review.md](realism_review.md).
 
 Update this file when: a module is added, moved, or renamed; the execution
 flow gains or loses a stage; the plugin protocol changes.
