@@ -15,6 +15,8 @@ Version 0.11 adds dynamic take-profit updates, common market/run identities,
 factory evidence transport, and current Binance conditional-order API support.
 See the [runtime and plugin migration contract](https://github.com/koval-finance/koval-engine/blob/main/agents_docs/runtime_contract.md)
 and the [execution realism review](https://github.com/koval-finance/koval-engine/blob/main/agents_docs/realism_review.md).
+The 0.11.1 patch adds authoritative graph account binding and explicit paper
+replay endings, and corrects partial-fill accounting and instrument sizing.
 
 ## Quick start
 

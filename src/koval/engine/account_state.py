@@ -3,8 +3,8 @@
 Source of truth for balance/equity/margin/drawdown surfaced read-only on
 ``BarContext.account``. Equity is fed from the broker each bar;
 daily PnL, drawdown and margin are derived here. Holds only plain data so it
-survives the process-pool job queue. Not a graph node — updated via GraphStrategy
-hooks (``on_bar`` / ``on_open`` / ``on_close``).
+survives the process-pool job queue. Runtimes update it from execution events;
+standalone GraphStrategy instances maintain a fallback through position hooks.
 """
 
 from __future__ import annotations

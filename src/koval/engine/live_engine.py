@@ -11,6 +11,7 @@ import datetime as _dt
 import math
 import uuid
 from collections.abc import Callable
+from copy import copy
 from dataclasses import dataclass, field, replace
 
 import numpy as np
@@ -69,6 +70,7 @@ class LiveEngineConfig:
     daily_baseline_equity: float | None = None
     peak_equity: float | None = None
     exchange: str | None = None
+    end_of_data_policy: str = "flatten_at_last_close"
 
 
 def _noop(_x: object) -> None:
@@ -193,6 +195,8 @@ def _validate_ohlcv_row(
 
 
 def _validate_live_config(config: LiveEngineConfig) -> None:
+    if config.end_of_data_policy not in {"flatten_at_last_close", "mark_at_last_close"}:
+        raise ValueError("unsupported end_of_data_policy")
     if not isinstance(config.symbol, str) or not config.symbol.strip():
         raise ValueError("live engine symbol must be non-empty")
     timeframe_ms(config.timeframe)
@@ -252,7 +256,9 @@ def _validate_live_setup(setup: TradeSetup, *, expected_direction: str) -> None:
         )
 
 
-def _validate_fill_against_protection(setup: TradeSetup, fill: Fill) -> None:
+def _validate_fill_against_protection(
+    setup: TradeSetup, fill: Fill, *, paper_matched: bool = False
+) -> None:
     try:
         fill_price = float(fill.price)
         fill_quantity = float(fill.quantity)
@@ -267,8 +273,8 @@ def _validate_fill_against_protection(setup: TradeSetup, fill: Fill) -> None:
             not math.isfinite(value) or value <= 0
             for value in (fill_price, fill_quantity, stop_loss, take_profit)
         )
-        or (fill.side == "buy" and not stop_loss < fill_price < take_profit)
-        or (fill.side == "sell" and not take_profit < fill_price < stop_loss)
+        or (not paper_matched and fill.side == "buy" and not stop_loss < fill_price < take_profit)
+        or (not paper_matched and fill.side == "sell" and not take_profit < fill_price < stop_loss)
     ):
         raise ValueError("entry fill is invalid or outside configured protection")
 
@@ -317,6 +323,7 @@ class LiveEngine:
         self._strategy = assemble_from_graph(graph)
         self._strategy.config = {"symbol": config.symbol}
         self._config = config
+        self._terminal_policy: str | None = None
         self._session_id = session_id or uuid.uuid4().hex
         self._profile = resolve_paper_profile(config.execution)
         self._broker = broker or PaperBroker(
@@ -331,6 +338,8 @@ class LiveEngine:
             exchange=config.exchange,
         )
         self._validate_broker_config(config)
+        if self._broker.target != "paper" and config.end_of_data_policy != "flatten_at_last_close":
+            raise ValueError("mark_at_last_close is available only for paper replay")
         exchange = config.exchange or getattr(self._broker, "exchange", None)
         self._market_identity = (
             resolve_market_identity(exchange=exchange, market=config.market, symbol=config.symbol)
@@ -352,6 +361,9 @@ class LiveEngine:
             peak_equity=config.peak_equity,
             ledger=broker_ledger,
         )
+        bind_account = getattr(self._strategy, "bind_account", None)
+        if bind_account is not None:
+            bind_account(self._account.snapshot)
         self._window = _Window(max_len=config.max_window)
         if config.history is not None:
             try:
@@ -448,7 +460,7 @@ class LiveEngine:
                 "requires_higher_timeframe": self._config.requires_higher_timeframe,
                 "daily_baseline_equity": self._config.daily_baseline_equity,
                 "peak_equity": self._config.peak_equity,
-                "end_of_data_policy": "flatten_at_last_close",
+                "end_of_data_policy": self._terminal_policy or self._config.end_of_data_policy,
             },
             engine_version=__version__,
             execution_mode=self._broker.target,
@@ -507,7 +519,7 @@ class LiveEngine:
                     )
                 raise
             else:
-                self._finalize()
+                self._finalize(end_of_data=not stop.is_set())
         finally:
             self._emit(EventType.SESSION_END, {})
 
@@ -762,7 +774,9 @@ class LiveEngine:
         self._pending_setup = None
         if setup is not None:
             try:
-                _validate_fill_against_protection(setup, fill)
+                _validate_fill_against_protection(
+                    setup, fill, paper_matched=isinstance(self._broker, PaperBroker)
+                )
             except ValueError:
                 self._entries_halted = True
                 self._broker_entries_halted = True
@@ -779,12 +793,19 @@ class LiveEngine:
                 else:
                     self._contain_exposure("fill_outside_configured_protection")
                 raise
-            self._strategy.on_open_position(self._trade_id, setup)
+            actual_setup = copy(setup)
+            actual_setup.entry_price = fill.price
+            actual_setup.size = fill.quantity
+            if isinstance(self._broker, PaperBroker):
+                reference = self._broker.protection_reference
+                if reference is not None:
+                    actual_setup.stop_loss = reference.stop_price
+                    actual_setup.take_profit = reference.target_price
             self._account.on_open(
                 side=fill.side,
                 entry_price=fill.price,
                 quantity=fill.quantity,
-                current_stop=setup.stop_loss,
+                current_stop=actual_setup.stop_loss,
                 margin=fill.margin or float(getattr(self._broker, "margin_used", 0.0)),
             )
             if fill.commission and not self._uses_broker_ledger:
@@ -793,7 +814,8 @@ class LiveEngine:
                     timestamp_ms=fill.timestamp_ms,
                     reference_id=self._last_entry_client_order_id,
                 )
-            self._place_protection(setup, fill)
+            self._strategy.on_open_position(self._trade_id, actual_setup)
+            self._place_protection(actual_setup, fill)
         self._emit(
             EventType.TRADE_OPENED,
             {
@@ -822,7 +844,9 @@ class LiveEngine:
         current = self._open_entry_fill
         if setup is None or current is None:
             raise RuntimeError("additional entry fill has no open setup to resize")
-        _validate_fill_against_protection(setup, fill)
+        _validate_fill_against_protection(
+            setup, fill, paper_matched=isinstance(self._broker, PaperBroker)
+        )
         total_quantity = current.quantity + fill.quantity
         average_price = (
             current.price * current.quantity + fill.price * fill.quantity
@@ -1069,7 +1093,6 @@ class LiveEngine:
 
     def _on_close(self, fill: Fill) -> None:
         record = self._trade_record(self._open_setup, fill)
-        self._strategy.on_close_position(self._trade_id, {"pnl": record["pnl"]})
         self._account.on_close(
             realized_pnl=fill.realized_pnl + fill.commission + fill.liquidation_fee,
             timestamp_ms=fill.timestamp_ms,
@@ -1088,6 +1111,7 @@ class LiveEngine:
                 timestamp_ms=fill.timestamp_ms,
                 reference_id=self._last_entry_client_order_id,
             )
+        self._strategy.on_close_position(self._trade_id, {"pnl": record["pnl"]})
         self._open_setup = None
         self._open_entry_fill = None
         self._partial_exit_realized_pnl = 0.0
@@ -1172,7 +1196,9 @@ class LiveEngine:
             "run_identity": self._run_identity(),
         }
 
-    def _finalize(self, *, require_confirmation: bool = True) -> None:
+    def _finalize(self, *, require_confirmation: bool = True, end_of_data: bool = False) -> None:
+        retain = end_of_data and self._config.end_of_data_policy == "mark_at_last_close"
+        self._terminal_policy = "mark_at_last_close" if retain else "flatten_at_last_close"
         position = self._broker_position()
         if self._broker.target != "paper":
             if (
@@ -1190,7 +1216,7 @@ class LiveEngine:
             self._cancel_working_orders()
             self._external_entry_pending = False
             self._pending_setup = None
-        if position is not None:
+        if position is not None and not retain:
             ts = self._window.ts[-1] if self._window.ts else 0
             price = self._window.c[-1] if self._window.c else 0.0
             fill = self._broker.flatten(ts_ms=ts, price=price)

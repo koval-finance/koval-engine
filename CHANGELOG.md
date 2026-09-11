@@ -6,6 +6,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-09-12
+
+### Fixed
+
+- Mark remaining paper exposure at the candle close after a partial exit.
+- Reapply instrument quantity steps and minima after risk and volume caps;
+  debit shared bar liquidity only for actual fills. Partial protective exits
+  respect quantity steps without leaving floating-point lot dust.
+- Reconcile same-bar paper entries and protective exits without restoring exited
+  quantity or treating a broker-matched gap as an external protection failure.
+  Preserve normalized protective prices in account snapshots and callbacks.
+- Bind graph account reads to the runtime ledger. Opening hooks receive actual
+  fill price and quantity; requested setup callbacks cannot book cashflows twice.
+
+### Added
+
+- Public `DeclarativeStrategy.bind_account(provider)` and `account_snapshot()`
+  hooks for independent runtimes; standalone graph fallback remains supported.
+- Optional `LiveEngineConfig.end_of_data_policy="mark_at_last_close"` for paper
+  replay comparisons. The default remains `flatten_at_last_close`; stops/errors
+  still flatten and record the applied policy. Sandbox sessions cannot retain
+  exposure through this option.
+- Expanded runtime-contract and execution-review documentation for the 0.11.1
+  fixes and cross-runtime acceptance scope.
+
+Protocol version 1, existing profile names, execution modes and runtime
+dependencies are unchanged. Reproduce older runs with their recorded package
+versions. This patch does not claim order-book or production-fill fidelity.
+
 ## [0.11.0] - 2026-09-11
 
 ### Added

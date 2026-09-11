@@ -1,5 +1,16 @@
 # Execution realism review — 0.11
 
+## 0.11.1 paired follow-up
+
+The five gaps subsequently reported by the published plugin's 0.11 review are
+addressed in the 0.11.1 candidate pair. Public account binding, closing callback
+order, lot-step caps, shared liquidity, residual marks and explicit replay
+endings are covered by engine regressions and independent plugin comparisons.
+Full-runtime tests also cover gap containment and same-bar partial exits.
+The original 0.11.0 investigation and dated diagnostic snapshot below remain
+historical evidence; their downstream failures are not current candidate results.
+
+
 Purpose: findings, source rationale, and the limits of the release evidence.
 Reviewed on 2026-09-11; all external sources below are primary project or venue
 documentation. This review does not assert strategy profitability.

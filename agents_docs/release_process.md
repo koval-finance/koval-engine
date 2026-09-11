@@ -47,7 +47,7 @@ rather than keeping it; the released artifact is always available from PyPI.
 ## 0.11 migration and local release validation
 
 Read [runtime_contract.md](runtime_contract.md) before updating a plugin. A plugin
-must admit engine `0.11.0` in its dependency range and pass the added hook/spot
+must admit engine `0.11.1` in its dependency range and pass the added hook/spot
 fixtures using the installed candidate wheel. Do not change a sibling virtualenv
 that another session is using; use an isolated copy/environment for diagnostics.
 

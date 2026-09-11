@@ -63,6 +63,15 @@ FORBIDDEN = re.compile(
     r"|technical_debt\.md"
     r"|product_roadmap\.md"
     r"|troubleshooting_known_issues\.md"
+    r"|application_integration\.md"
+    r"|release_0_11_1\.md"
+    r"|application handoff"
+    r"|SaaS objective"
+    r"|waitlist"
+    r"|private beta"
+    r"|paid release"
+    r"|recurring revenue"
+    r"|tenant isolation"
     r"|Node Manifesto",
     re.IGNORECASE,
 )
@@ -74,9 +83,13 @@ FORBIDDEN = re.compile(
         "Phase4 implementation",
         "existing API error mapping",
         "error mapping (422)",
+        "application_integration.md",
+        "release_0_11_1.md",
+        "private beta",
+        "recurring revenue",
     ],
 )
-def test_internal_language_detector_covers_compact_phases_and_hosted_api_phrases(text):
+def test_internal_language_detector_covers_private_planning_terms(text):
     assert FORBIDDEN.search(text)
 
 

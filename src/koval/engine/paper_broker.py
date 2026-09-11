@@ -813,11 +813,16 @@ class PaperBroker:
         if self._pending is not None:
             self._pending = replace(self._pending, stop_price=stop, target_price=target)
 
+    @property
+    def protection_reference(self) -> BrokerPosition | None:
+        """Position at the fill boundary, before any same-bar protective exit."""
+        return self._deferred_exit[1] if self._deferred_exit is not None else self._position
+
     def place_protection(self, intent: ProtectiveOrderIntent) -> list[BrokerOrderAck]:
-        reference = self._validate_protection_intent(intent)
+        self._validate_protection_intent(intent)
         if self._position is not None:
             self._position = replace(
-                reference,
+                self._position,
                 stop_price=float(intent.stop_price),
                 target_price=float(intent.target_price),
                 session_id=intent.session_id,
@@ -847,13 +852,7 @@ class PaperBroker:
         ]
 
     def _validate_protection_intent(self, intent: ProtectiveOrderIntent) -> BrokerPosition:
-        reference = (
-            self._position
-            if self._position is not None
-            else self._deferred_exit[1]
-            if self._deferred_exit is not None
-            else None
-        )
+        reference = self.protection_reference
         if reference is None:
             raise ValueError("invalid protective order: no position to protect")
         if intent.target != self.target:
@@ -898,6 +897,10 @@ class PaperBroker:
             )
         if quantity != reference.quantity:
             raise ValueError("invalid protective order: quantity does not match the position")
+        if stop_price == reference.stop_price and target_price == reference.target_price:
+            # These validated legs already participated in paper matching. A gap
+            # or partial exit must not reinterpret them as a new bracket.
+            return reference
         if reference.stop_client_order_id and reference.target_client_order_id:
             # Resizing an already-protected partial position must preserve a
             # profit-locking stop even when it lies beyond the average entry.
@@ -987,10 +990,9 @@ class PaperBroker:
             if matched is None:
                 return []
             liquidity_role = "maker" if o.order_type in _LIMIT_ORDER_TYPES else "taker"
-            fill_quantity = self._allocate_fill_quantity(
-                requested=o.quantity,
-                order_id=o.client_order_id or "paper-entry",
-                liquidity=liquidity,
+            # Inspect capacity first; only an accepted, normalized fill consumes it.
+            fill_quantity = (
+                o.quantity if liquidity is None else min(o.quantity, float(liquidity.remaining))
             )
             if fill_quantity <= 0:
                 return []
@@ -1024,10 +1026,28 @@ class PaperBroker:
                     if self._position is None:
                         self._entry_rejection = "risk_budget_exhausted"
                     return []
+                if instrument_spec is not None:
+                    try:
+                        o, fill_price = self._normalize_fill(o, fill_price, instrument_spec)
+                        normalized_fill, _ = self._normalize_fill(
+                            replace(o, quantity=min(fill_quantity, o.quantity)),
+                            fill_price,
+                            instrument_spec,
+                        )
+                        fill_quantity = normalized_fill.quantity
+                    except ValueError as exc:
+                        self._pending = None
+                        self._entry_rejection = f"instrument_constraint: {exc}"
+                        return []
                 if self._reject_unaffordable_entry(
                     fill_quantity, fill_price, liquidity_role=liquidity_role
                 ):
                     return []
+            self._allocate_fill_quantity(
+                requested=fill_quantity,
+                order_id=o.client_order_id or "paper-entry",
+                liquidity=liquidity,
+            )
             entry_fill = self._open(
                 o,
                 reference=matched,
@@ -1453,13 +1473,21 @@ class PaperBroker:
             "take_profit": p.target_client_order_id or f"{p.entry_client_order_id}-target",
             "manual_close": f"paper-flatten-{p.session_id}",
         }[kind]
-        quantity = self._allocate_fill_quantity(
-            requested=p.quantity,
-            order_id=order_id,
-            liquidity=liquidity,
-        )
+        quantity = p.quantity if liquidity is None else min(p.quantity, float(liquidity.remaining))
+        if self._instrument_specs:
+            spec = select_instrument_spec(self._instrument_specs, timestamp_ms=int(ts_ms))
+            step = float(spec.step_size)
+            lots = quantity / step
+            nearest = round(lots)
+            count = (
+                nearest
+                if math.isclose(lots, nearest, rel_tol=0, abs_tol=1e-9)
+                else math.floor(lots)
+            )
+            quantity = min(quantity, float(Decimal(count) * spec.step_size))
         if quantity <= 0:
             return None
+        self._allocate_fill_quantity(requested=quantity, order_id=order_id, liquidity=liquidity)
         slippage = self._slippage_resolution(
             timestamp_ms=int(ts_ms), fill_quantity=quantity, volume=volume
         )
@@ -1523,7 +1551,9 @@ class PaperBroker:
             self._position = None
             self._entry_bar_ts = None
             self._exit_cumulative_quantity = 0.0
-        self._last_close = float(fill_price)
+        # process_bar owns the closing mark; an exit price values only its fill.
+        if self._position is None:
+            self._last_close = float(fill_price)
         self._last_timestamp_ms = int(ts_ms)
         fill = Fill(
             kind,

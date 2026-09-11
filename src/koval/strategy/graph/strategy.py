@@ -33,10 +33,13 @@ def build_graph_strategy(
             self._open_order_meta: dict = {}
 
         def _ctx(self) -> BarContext:
-            if not self._account_seeded:
-                self._account = PlatformAccountState(starting_balance=self.account_value)
-                self._account_seeded = True
-            self._account.on_bar(equity=self.account_value, timestamp_ms=self.timestamp_ms)
+            account = self.account_snapshot()
+            if account is None:
+                if not self._account_seeded:
+                    self._account = PlatformAccountState(starting_balance=self.account_value)
+                    self._account_seeded = True
+                self._account.on_bar(equity=self.account_value, timestamp_ms=self.timestamp_ms)
+                account = self._account.snapshot()
             return BarContext(
                 close=self.close,
                 high=self.high,
@@ -59,7 +62,7 @@ def build_graph_strategy(
                 position_size=self.position_size,
                 position_direction=self.position_direction,
                 symbol=str(self.config.get("symbol", "")),
-                account=self._account.snapshot(),
+                account=account,
             )
 
         def _ensure_stepped(self) -> StepResult:
@@ -121,6 +124,8 @@ def build_graph_strategy(
         def on_open_position(self, trade_id: int, setup: TradeSetup) -> None:
             self._open_trade_setup = setup
             self._open_current_stop = setup.stop_loss
+            if self.account_snapshot() is not None:
+                return
             self._account.on_open(
                 side="buy" if setup.direction == "long" else "sell",
                 entry_price=setup.entry_price,
@@ -132,7 +137,8 @@ def build_graph_strategy(
         def on_close_position(self, trade_id: int, result: dict) -> None:
             self._open_trade_setup = None
             self._open_current_stop = 0.0
-            self._account.on_close(realized_pnl=float(result.get("pnl", 0.0)))
+            if self.account_snapshot() is None:
+                self._account.on_close(realized_pnl=float(result.get("pnl", 0.0)))
 
         def on_sl_update(self, trade_id: int) -> float | None:
             if self._dyn_exit is None or self._open_trade_setup is None:

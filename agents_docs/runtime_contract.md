@@ -6,7 +6,7 @@ acceptance must be measured independently.
 
 ## Versions and compatibility
 
-The package release is `0.11.0`. `ENGINE_PROTOCOL_VERSION` remains `1` because
+The package release is `0.11.1`. `ENGINE_PROTOCOL_VERSION` remains `1` because
 the plugin spec/result interfaces have no breaking structural change. The
 runtime behavior identifier is `koval_runtime_v2`; the run identity schema is
 `koval_run_identity_v1`. Both constants are exported from
@@ -22,6 +22,36 @@ unsupported inputs, and correcting metadata/accounting attribution are runtime
 fixes, not changes to v1 fill arithmetic. Replaying an old run requires its
 recorded package version as well as its profile. Do not substitute 0.11 for 0.10
 when reproducing a strategy with `on_tp_update`.
+
+## Account binding and replay endings in 0.11.1
+
+`DeclarativeStrategy.bind_account(provider)` accepts a zero-argument callable
+returning an immutable `AccountSnapshot`. `account_snapshot()` reads it, or
+returns `None` for a standalone strategy. LiveEngine binds its ledger-backed
+account before execution; plugins bind their independently maintained account.
+Graph contexts prefer this provider and do not book requested setup callbacks
+into a second account. Standalone graphs retain the previous fallback.
+
+Before each `on_bar`, the runtime processes funding and fills, updates account
+quantities/margin, marks remaining exposure at the candle close, and injects
+state. `on_open_position` receives a copy of the setup with actual fill price,
+filled quantity and accepted protective levels. It fires once per position;
+subsequent partial quantities are read from account snapshots. Hooks run within
+fill processing; the complete bar-close equity is available at `on_bar`.
+
+`LiveEngineConfig.end_of_data_policy` accepts `flatten_at_last_close` (default)
+or `mark_at_last_close` (paper only). On natural feed exhaustion the latter
+cancels unfilled entries, retains protected exposure and marks it at the last
+close, matching the backtest plugin. It does not simulate an exit fee or create
+a closed trade. A stop signal or error still flattens; the terminal run identity
+records the applied policy. This is a completed simulation result, not a durable
+resume/checkpoint mechanism. Sandbox containment behavior is unchanged.
+
+PaperBroker acknowledges its already-matched protective legs using the
+`protection_reference` snapshot. A same-bar partial exit does not restore the
+pre-exit quantity. A gap beyond an accepted bracket remains a simulated market
+containment fill, while external broker fills still require strict protection
+validation.
 
 ## Dynamic protection
 

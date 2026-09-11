@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from koval.strategy.base.trade_setup import TradeSetup
 
 if TYPE_CHECKING:
     import numpy as np
+
+    from koval.engine.account_state import AccountSnapshot
 
 
 class DeclarativeStrategy:
@@ -50,6 +53,16 @@ class DeclarativeStrategy:
 
     def __init__(self) -> None:
         self.config = {}
+        self._account_provider: Callable[[], AccountSnapshot] | None = None
+
+    def bind_account(self, provider: Callable[[], AccountSnapshot]) -> None:
+        """Bind a read-only snapshot provider owned and updated by the runtime."""
+        self._account_provider = provider
+
+    def account_snapshot(self) -> AccountSnapshot | None:
+        """Return actual account state, or None when running without a host binding."""
+        provider = getattr(self, "_account_provider", None)
+        return provider() if provider is not None else None
 
     def should_long(self) -> bool:
         return False
