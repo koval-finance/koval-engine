@@ -6,6 +6,43 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-09-12
+
+### Added
+
+- Protocol 2 with optional `koval_runtime_boundaries_v1`: explicit warmup and
+  evaluation intervals, bar-close decision clock, initial account/risk baselines
+  and ending policy. Plugins must offer `runtime_boundaries_v1` to accept it.
+  A public graph fixture specifies independent account expectations.
+- `LiveEngine(on_record=...)` synchronous input/execution journal with full OHLCV,
+  stable record/decision/fill/cashflow IDs, receipt and event times, account
+  snapshots, hash verification and an acknowledged processing checkpoint.
+- WhiteBIT current public fee evidence with source, market and capture interval;
+  Binance historical candle-open mark samples with exact coverage checks.
+
+### Fixed
+
+- WhiteBIT OHLCV requests now bound both page ends, avoid forming-minute requests,
+  reject truncated/gapped data and conflicting duplicates, and report requested,
+  closed and actual coverage separately. Synthetic response regressions cover
+  the previously failing current-window request.
+- Funding coverage validates instrument and bounds even on direct construction.
+  Empty windows require a sourced settlement anchor; calculation time is not a
+  settlement interval. Repeated WhiteBIT funding pages fail promptly.
+- Fee evidence can be bound to venue/market/symbol; mark-series constructors
+  reject false complete-coverage claims.
+- Sandbox entries are refused while existing orders or exposure require
+  reconciliation, including after an uncertain timeout.
+- Narratives calculate price movement from entry/exit independently of net PnL;
+  missing facts remain unrecorded. Decision context survives trade projection.
+
+### Compatibility and limits
+
+- Protocol 1 specs without the new contract retain their previous warmup/ending
+  semantics. Existing fill profiles remain explicit and unchanged.
+- Archive retention, durable broker recovery, plugin/app adoption, authenticated
+  testnet acceptance and production-fill calibration remain separate gates.
+
 ## [0.11.1] - 2026-09-12
 
 ### Fixed
@@ -267,7 +304,8 @@ First public release.
 - The MIT/GPL boundary is enforced by a test rather than by convention: no file in this package may import Backtrader.
 - Releases are published to PyPI through Trusted Publishing (OIDC) with PEP 740 attestations. No long-lived PyPI credential is used in CI.
 
-[Unreleased]: https://github.com/koval-finance/koval-engine/compare/v0.11.1...HEAD
+[Unreleased]: https://github.com/koval-finance/koval-engine/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/koval-finance/koval-engine/compare/v0.11.1...v0.12.0
 [0.11.1]: https://github.com/koval-finance/koval-engine/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/koval-finance/koval-engine/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/koval-finance/koval-engine/releases/tag/v0.10.0

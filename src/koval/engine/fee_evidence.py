@@ -5,6 +5,8 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
+from koval.engine.market_identity import resolve_market_identity
+
 _EVIDENCE_STATUSES = frozenset({"historical", "current_snapshot", "approximation"})
 _LIQUIDITY_ROLES = frozenset({"maker", "taker"})
 
@@ -23,8 +25,23 @@ class FeeScheduleEvidence:
     effective_to_ms: int | None = None
     discount_treatment: str = "none"
     tier_id: str = "unspecified"
+    exchange: str | None = None
+    market: str | None = None
+    canonical_symbol: str | None = None
+    raw_response: object | None = None
 
     def __post_init__(self) -> None:
+        context = (self.exchange, self.market, self.canonical_symbol)
+        if any(value is not None for value in context):
+            if not all(context):
+                raise ValueError(
+                    "fee exchange, market and canonical_symbol must be supplied together"
+                )
+            identity = resolve_market_identity(
+                exchange=self.exchange, market=self.market, symbol=self.canonical_symbol
+            )
+            if (identity.exchange, identity.market, identity.canonical_symbol) != context:
+                raise ValueError("fee market identity must be canonical")
         for field_name in (
             "evidence_id",
             "currency",

@@ -11,7 +11,7 @@ depth. Load only what the task calls for.
 | [invariants.md](invariants.md) | every load-bearing rule and the test that pins it |
 | [agent_workflow.md](agent_workflow.md) | the work loop, the git policy, the hard rules |
 | [architecture.md](architecture.md) | module map, execution flow, the plugin seam |
-| [runtime_contract.md](runtime_contract.md) | 0.11 hook, market, evidence, identity and sandbox contracts |
+| [runtime_contract.md](runtime_contract.md) | runtime boundaries, market, evidence, identity and sandbox contracts |
 | [realism_review.md](realism_review.md) | execution review findings, primary sources and acceptance limits |
 | [graph_contracts.md](graph_contracts.md) | domains, ports, entities, validation boundaries |
 | [adding_a_block.md](adding_a_block.md) | the four pieces of a block, end to end |

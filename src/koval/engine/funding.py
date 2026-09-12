@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 
+from koval.engine.market_identity import canonical_symbol, resolve_market_identity
 from koval.exchanges.markets import canonical_market
 
 
@@ -61,6 +62,12 @@ class FundingSeries:
     records: tuple[FundingRecord, ...]
     coverage_complete: bool
     raw_responses: tuple[object, ...] = field(default_factory=tuple)
+    interval_ms: int | None = None
+    settlement_anchor_ms: int | None = None
+    schedule_source: str | None = None
+
+    def __post_init__(self) -> None:
+        _validate_series(self)
 
 
 def _decimal(value: object, *, field_name: str, positive: bool = False) -> Decimal:
@@ -79,6 +86,68 @@ def _non_negative_timestamp(value: object, *, field_name: str) -> int:
     return value
 
 
+def _funding_symbol(exchange: str, symbol: str) -> str:
+    if exchange == "whitebit":
+        from koval.exchanges.whitebit import WhiteBITAdapter
+
+        return canonical_symbol(WhiteBITAdapter(market="future")._market_symbol(symbol))
+    return canonical_symbol(symbol)
+
+
+def _validate_series(series: FundingSeries) -> None:
+    identity = resolve_market_identity(
+        exchange=series.exchange, market=series.market, symbol=series.canonical_symbol
+    )
+    if identity.market != "future":
+        raise ValueError("funding is unavailable for spot markets")
+    start = _non_negative_timestamp(series.requested_start_ms, field_name="requested_start_ms")
+    end = _non_negative_timestamp(series.requested_end_ms, field_name="requested_end_ms")
+    if end < start:
+        raise ValueError("funding requested end must not precede start")
+    records = series.records
+    timestamps = [record.settlement_timestamp_ms for record in records]
+    if timestamps != sorted(set(timestamps)):
+        raise ValueError("duplicate or unordered funding settlement timestamp")
+    if any(not start <= ts <= end for ts in timestamps):
+        raise ValueError("funding record is outside requested coverage")
+    if any(
+        _funding_symbol(identity.exchange, r.symbol)
+        != _funding_symbol(identity.exchange, identity.canonical_symbol)
+        for r in records
+    ):
+        raise ValueError("funding record symbol does not match requested instrument")
+    intervals = {record.interval_ms for record in records}
+    if len(intervals) > 1:
+        raise ValueError("funding interval must be one positive constant for the series")
+    interval = series.interval_ms
+    if interval is not None and (
+        isinstance(interval, bool) or not isinstance(interval, int) or interval <= 0
+    ):
+        raise ValueError("funding interval_ms must be a positive integer")
+    if records:
+        inferred = records[0].interval_ms
+        if interval is not None and interval != inferred:
+            raise ValueError("declared funding interval_ms disagrees with its records")
+        interval = inferred
+    if not series.coverage_complete:
+        return
+    if not records:
+        if interval is None or end - start >= interval:
+            raise ValueError("incomplete funding coverage: no settlement records")
+        anchor = series.settlement_anchor_ms
+        if anchor is None or not series.schedule_source:
+            raise ValueError("empty funding coverage needs settlement anchor and schedule_source")
+        _non_negative_timestamp(anchor, field_name="settlement_anchor_ms")
+        next_settlement = start + (anchor - start) % interval
+        if next_settlement <= end:
+            raise ValueError("incomplete funding coverage: missing scheduled settlement")
+        return
+    if any(b - a != interval for a, b in zip(timestamps, timestamps[1:], strict=False)):
+        raise ValueError("incomplete funding coverage: missing settlement")
+    if timestamps[0] - start >= interval or end - timestamps[-1] >= interval:
+        raise ValueError("incomplete funding coverage: missing boundary settlement")
+
+
 def build_funding_series(
     records: list[FundingRecord] | tuple[FundingRecord, ...],
     *,
@@ -88,71 +157,27 @@ def build_funding_series(
     requested_start_ms: int,
     requested_end_ms: int,
     interval_ms: int | None = None,
+    settlement_anchor_ms: int | None = None,
+    schedule_source: str | None = None,
     raw_responses: tuple[object, ...] = (),
 ) -> FundingSeries:
-    """Validate that every settlement inside the requested window is present.
+    """Validate inclusive settlement coverage, identity and schedule evidence.
 
-    Coverage is judged against the phase the records themselves reveal, not an
-    assumed epoch-aligned grid: venues settle on their own schedule and one
-    that is offset from a multiple of the interval is still complete. Supply
-    ``interval_ms`` when ``records`` is empty, which is only accepted for a
-    window narrower than one interval — a window that spans a whole interval
-    must contain a settlement, so an empty one is missing evidence.
+    An empty window requires a sourced settlement anchor and interval proving
+    that no settlement was scheduled there. Duration alone is not evidence.
     """
-    canonical = canonical_market(market)
-    if canonical != "future":
-        raise ValueError("funding is unavailable for spot markets")
-    start = int(requested_start_ms)
-    end = int(requested_end_ms)
-    if end < start:
-        raise ValueError("funding requested end must not precede start")
-    ordered = tuple(sorted(records, key=lambda record: record.settlement_timestamp_ms))
-    timestamps = [record.settlement_timestamp_ms for record in ordered]
-    if len(timestamps) != len(set(timestamps)):
-        raise ValueError("duplicate funding settlement timestamp")
-    intervals = {record.interval_ms for record in ordered}
-    if len(intervals) > 1:
-        raise ValueError("funding interval must be one positive constant for the series")
-    if interval_ms is not None and (
-        isinstance(interval_ms, bool) or not isinstance(interval_ms, int) or interval_ms <= 0
-    ):
-        raise ValueError("funding interval_ms must be a positive integer")
-    interval = next(iter(intervals), None)
-    if interval is None:
-        if interval_ms is None:
-            raise ValueError("an empty funding series must declare its interval_ms")
-        interval = interval_ms
-    elif interval_ms is not None and interval_ms != interval:
-        raise ValueError("declared funding interval_ms disagrees with its records")
-    for record in ordered:
-        _decimal(record.rate, field_name="rate")
-        _decimal(record.settlement_mark_price, field_name="settlement mark price", positive=True)
-    if not ordered:
-        if end - start >= interval:
-            raise ValueError("incomplete funding coverage: no settlement records")
-    else:
-        expected = list(range(timestamps[0], timestamps[-1] + 1, interval))
-        if timestamps != expected:
-            observed = set(timestamps)
-            missing = next((value for value in expected if value not in observed), None)
-            raise ValueError(f"incomplete funding coverage: missing settlement {missing}")
-        if timestamps[0] - start >= interval:
-            raise ValueError(
-                f"incomplete funding coverage: missing settlement {timestamps[0] - interval}"
-            )
-        if end - timestamps[-1] >= interval:
-            raise ValueError(
-                f"incomplete funding coverage: missing settlement {timestamps[-1] + interval}"
-            )
     return FundingSeries(
         exchange=str(exchange).strip().lower(),
-        market=canonical,
-        canonical_symbol=str(symbol).replace("/", "").replace("_", "").upper(),
-        requested_start_ms=int(requested_start_ms),
-        requested_end_ms=int(requested_end_ms),
-        records=ordered,
+        market=canonical_market(market),
+        canonical_symbol=canonical_symbol(symbol),
+        requested_start_ms=requested_start_ms,
+        requested_end_ms=requested_end_ms,
+        records=tuple(sorted(records, key=lambda record: record.settlement_timestamp_ms)),
         coverage_complete=True,
         raw_responses=tuple(raw_responses),
+        interval_ms=interval_ms,
+        settlement_anchor_ms=settlement_anchor_ms,
+        schedule_source=schedule_source,
     )
 
 

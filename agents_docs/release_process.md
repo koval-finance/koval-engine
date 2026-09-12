@@ -44,12 +44,13 @@ pre-release engine was once measured as if it were the published release.
 an artifact there does not carry the current sources. Delete a stale build
 rather than keeping it; the released artifact is always available from PyPI.
 
-## 0.11 migration and local release validation
+## Protocol compatibility and local release validation
 
 Read [runtime_contract.md](runtime_contract.md) before updating a plugin. A plugin
-must admit engine `0.11.1` in its dependency range and pass the added hook/spot
-fixtures using the installed candidate wheel. Do not change a sibling virtualenv
-that another session is using; use an isolated copy/environment for diagnostics.
+must admit the intended engine release in its dependency range, offer every
+requested protocol capability, and pass the shared fixtures using the installed
+wheel. Do not change a sibling virtualenv that another session is using; use an
+isolated copy/environment for diagnostics.
 
 Build and validate from the final working tree:
 

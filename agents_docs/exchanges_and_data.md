@@ -46,6 +46,17 @@ a range that includes the current forming candle is rejected. The consumer must
 archive those exact bytes; fetching the same range from a mutable cache later is
 not reproduction evidence.
 
+## WhiteBIT pagination and acquisition metadata
+
+WhiteBIT requests only closed candles. Each page bounds both start and end by
+its row limit (capped at 1440), using a fixed cutoff computed once per call.
+`last_fetch_metadata` separates requested bounds, effective first open, closed
+cutoff, actual half-open coverage and row count. Each nonempty page must cover
+its entire expected interval; truncation, gaps and conflicting duplicates fail.
+An entirely empty response for one page returns no candles with
+`coverage_complete=False`; it does not certify an empty historical dataset.
+Invalid venue payloads raise rather than being treated as an empty success.
+
 ## Funding and instrument evidence
 
 `ExchangeAdapter.fetch_funding_history` returns a normalized `FundingSeries` or
@@ -54,14 +65,26 @@ settlement time, settlement mark, interval, and source; incomplete requested
 coverage is rejected and raw response pages remain available to the archive
 boundary. Funding settles before any order action at the same timestamp.
 
-Coverage is judged against the phase the records themselves reveal, not an
-assumed epoch-aligned grid: a venue settling at an offset from a multiple of its
-interval is still complete. A window narrower than one interval may legitimately
-contain no settlement — pass `interval_ms` to `build_funding_series` to declare
-one — while a window spanning a whole interval with no record is missing
-evidence and is rejected. The Binance adapter still needs two settlements in the
-requested range to measure the interval, so short-window funding evidence has to
-be assembled by the archiving caller.
+Funding records use an inclusive settlement interval. The builder and direct
+series constructor check venue/market/symbol, ordering and complete coverage.
+An empty short window requires `interval_ms`, `settlement_anchor_ms` and
+`schedule_source` proving there was no scheduled settlement inside it. Duration
+alone cannot establish zero funding. Both venue adapters need at least two
+settlements to infer the interval; short windows need archived schedule evidence.
+WhiteBIT's rate-calculation time is not used as a settlement interval. Repeated
+funding pages or the venue's maximum offset terminate with explicit errors.
+
+`WhiteBITAdapter.fetch_fee_schedule` returns current public default fees with
+raw response, canonical identity and a point-in-time validity interval. Reusing
+that snapshot at another timestamp is an approximation. It is not an observed
+account rate. Optional identity on `FeeScheduleEvidence` is validated by paper;
+old unbound schedules remain explicit caller assumptions.
+
+`BinanceAdapter.fetch_mark_prices` samples historical mark-kline **opens** at
+inclusive aligned timestamps. It never uses the later close/high/low at the
+opening time. Both the acquisition path and direct `MarkPriceSeries` construction
+validate coverage. This is a sampled mark model, not continuous liquidation
+monitoring. WhiteBIT has no supported mark-history acquisition here.
 
 Fee schedules, instrument specifications, and mark-price series are separate
 evidence inputs. Historical evidence must cover the simulated timestamp.

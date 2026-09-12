@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import Any
 
 _EXIT_CANON = {
@@ -27,6 +28,8 @@ def context_from_raw(raw: dict[str, Any], trade_id: int) -> dict[str, Any]:
     exit_text = str(raw.get("exit_reason", "")) or "Unknown"
     return {
         "trade_id": trade_id,
+        "decision_context": deepcopy(raw.get("decision_context")),
+        "entry_order_id": raw.get("entry_order_id"),
         "pattern": (
             str(raw.get("reason"))
             if raw.get("reason")

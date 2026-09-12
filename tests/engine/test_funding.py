@@ -153,6 +153,8 @@ def test_a_window_shorter_than_one_interval_may_hold_no_settlement():
         requested_start_ms=H8 + 1,
         requested_end_ms=H8 + 6 * 60 * 60 * 1000,
         interval_ms=H8,
+        settlement_anchor_ms=H8,
+        schedule_source="archived_venue_schedule",
     )
 
     assert series.coverage_complete

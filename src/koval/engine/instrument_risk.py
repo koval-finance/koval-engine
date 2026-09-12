@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from decimal import ROUND_DOWN, ROUND_UP, Decimal, InvalidOperation
 
+from koval.engine.market_identity import resolve_market_identity
 from koval.exchanges.markets import canonical_market
 
 
@@ -164,6 +165,26 @@ class MarkPriceSeries:
     _by_timestamp: dict[int, MarkPriceRecord] | None = field(
         default=None, init=False, compare=False, repr=False
     )
+
+    def __post_init__(self) -> None:
+        resolve_market_identity(
+            exchange=self.exchange, market="future", symbol=self.canonical_symbol
+        )
+        for name in ("interval_ms", "requested_start_ms", "requested_end_ms"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"mark-price {name} must be a non-negative integer")
+        if self.interval_ms <= 0 or self.requested_end_ms < self.requested_start_ms:
+            raise ValueError("mark-price coverage interval is invalid")
+        timestamps = [record.timestamp_ms for record in self.records]
+        if timestamps != sorted(set(timestamps)):
+            raise ValueError("duplicate or unordered mark-price timestamp")
+        if self.coverage_complete:
+            expected = range(self.requested_start_ms, self.requested_end_ms + 1, self.interval_ms)
+            if len(timestamps) != len(expected) or any(
+                a != b for a, b in zip(timestamps, expected, strict=True)
+            ):
+                raise ValueError("incomplete mark-price coverage")
 
     def at(self, timestamp_ms: int) -> MarkPriceRecord | None:
         """The mark price stamped exactly ``timestamp_ms``, or ``None``.

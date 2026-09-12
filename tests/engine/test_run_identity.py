@@ -19,7 +19,7 @@ def test_factory_preserves_all_evidence_and_records_content_identity():
     from koval.engine.execution_proxy import ExecutionLatency, ExecutionProxyConfig
     from koval.engine.fee_evidence import FeeScheduleEvidence
     from koval.engine.funding import build_funding_series
-    from koval.engine.instrument_risk import MarkPriceSeries
+    from koval.engine.instrument_risk import MarkPriceRecord, MarkPriceSeries
     from tests.engine.test_instrument_risk import _spec
 
     evidence = dict(
@@ -31,10 +31,20 @@ def test_factory_preserves_all_evidence_and_records_content_identity():
             requested_start_ms=0,
             requested_end_ms=60_000,
             interval_ms=28_800_000,
+            settlement_anchor_ms=3_600_000,
+            schedule_source="archived_schedule",
         ),
         fee_schedule=FeeScheduleEvidence("fees", 1, 4, "USDT", "approximation", "test"),
         instrument_specs=(_spec(start=0, end=60_000),),
-        mark_prices=MarkPriceSeries("binance", "BTCUSDT", 60_000, 0, 0, (), True),
+        mark_prices=MarkPriceSeries(
+            "binance",
+            "BTCUSDT",
+            60_000,
+            0,
+            0,
+            (MarkPriceRecord(0, Decimal("100"), "archive"),),
+            True,
+        ),
         execution_proxy=ExecutionProxyConfig(Decimal("0.1"), "carry", ExecutionLatency()),
     )
     broker = build_broker("paper", SandboxBrokerConfig(paper_profile=EXECUTION, **evidence))
@@ -151,6 +161,8 @@ def test_factory_rejects_evidence_from_a_different_venue():
         requested_start_ms=0,
         requested_end_ms=60_000,
         interval_ms=28_800_000,
+        settlement_anchor_ms=3_600_000,
+        schedule_source="archived_schedule",
     )
     with pytest.raises(ValueError, match="exchange"):
         build_broker("paper", SandboxBrokerConfig(exchange="binance", funding=funding))

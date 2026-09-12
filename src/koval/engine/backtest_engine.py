@@ -15,12 +15,17 @@ from typing import Any, Protocol
 
 import numpy as np
 
+from koval.engine.run_boundaries import (
+    RUNTIME_BOUNDARIES_CAPABILITY,
+    resolve_runtime_boundaries,
+)
+
 _ENTRY_POINT_GROUP = "koval.backtest_engines"
 _DEFAULT_ENGINE_NAME = "backtrader"
 
 # Bump when EngineRunSpec / BacktestResult change in a breaking way so external
 # engines can negotiate compatibility.
-ENGINE_PROTOCOL_VERSION = 1
+ENGINE_PROTOCOL_VERSION = 2
 
 
 @dataclass
@@ -40,6 +45,7 @@ class EngineRunSpec:
     protocol_version: int = ENGINE_PROTOCOL_VERSION
     execution_contract_version: int = 1
     required_execution_capabilities: tuple[str, ...] = ()
+    runtime_contract: dict[str, Any] | None = None
 
 
 @dataclass
@@ -80,7 +86,9 @@ class ProtocolVersionError(RuntimeError):
 
 
 def check_protocol_version(spec: EngineRunSpec) -> None:
-    if spec.protocol_version != ENGINE_PROTOCOL_VERSION:
+    if spec.runtime_contract is not None and spec.protocol_version < 2:
+        raise ProtocolVersionError("runtime boundaries require protocol version 2")
+    if spec.protocol_version not in {1, ENGINE_PROTOCOL_VERSION}:
         raise ProtocolVersionError(
             f"spec protocol_version={spec.protocol_version} unsupported; "
             f"engine speaks {ENGINE_PROTOCOL_VERSION}"
@@ -92,12 +100,18 @@ def negotiate_execution_capabilities(
     offered: ExecutionCapabilities,
 ) -> NegotiatedExecutionCapabilities:
     """Fail closed when a plugin cannot honor requested execution evidence."""
+    check_protocol_version(spec)
+    boundaries = resolve_runtime_boundaries(spec.runtime_contract)
+    if boundaries is not None and boundaries.initial_balance != spec.initial_capital:
+        raise ValueError("runtime initial_balance must match initial_capital")
     requested_version = int(spec.execution_contract_version)
     if requested_version not in offered.execution_contract_versions:
         raise ProtocolVersionError(
             f"execution contract v{requested_version} is not offered by the engine"
         )
     required = tuple(dict.fromkeys(spec.required_execution_capabilities))
+    if boundaries is not None:
+        required = tuple(dict.fromkeys((*required, RUNTIME_BOUNDARIES_CAPABILITY)))
     missing = sorted(set(required) - set(offered.features))
     if missing:
         raise ProtocolVersionError(

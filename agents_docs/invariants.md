@@ -8,7 +8,7 @@ pass.
 |---|---|
 | No code path reaches a real-money trading endpoint. Only `paper` and `binance_sandbox` execution modes exist; WhiteBIT execution fails closed. | [`tests/safety/test_no_real_money_path.py`](../tests/safety/test_no_real_money_path.py) |
 | No file imports `backtrader` or any package derived from it. The core stays MIT; backtest engines are separate plugins. | [`tests/test_license_boundary.py`](../tests/test_license_boundary.py) |
-| No maintainer-private path is tracked by git. | [`tests/test_public_surface.py`](../tests/test_public_surface.py) |
+| No maintainer-private path, planning document, or recorded exchange response is tracked by git. | [`tests/test_public_surface.py`](../tests/test_public_surface.py) |
 | No internal planning vocabulary appears in the published tree. | [`tests/test_public_language.py`](../tests/test_public_language.py) |
 | The agent entry files, the documentation index, relative links, and the verification gate stay consistent. | [`tests/test_agents_docs.py`](../tests/test_agents_docs.py) |
 | The release path runs every quality gate before the irreversible PyPI publish. | [`tests/test_release_workflow.py`](../tests/test_release_workflow.py) |

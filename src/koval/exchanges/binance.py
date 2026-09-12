@@ -128,6 +128,62 @@ class BinanceAdapter(ExchangeAdapter):
             end_ms=end_ms,
         )
 
+    def fetch_mark_prices(self, symbol: str, timeframe: str, start_ms: int, end_ms: int):
+        """Historical mark samples at candle opens, inclusive of both bounds.
+
+        Candle high/low/close are deliberately not substituted for the mark
+        known at its opening timestamp. This is a sampled liquidation model.
+        """
+        from koval.engine.instrument_risk import MarkPriceRecord, build_mark_price_series
+
+        if self._market != "future":
+            raise ValueError("mark-price evidence is unavailable for spot")
+        step = timeframe_ms(timeframe)
+        if start_ms < 0 or end_ms < start_ms or start_ms % step or end_ms % step:
+            raise ValueError("mark-price bounds must be aligned and ordered")
+        records, pages = [], []
+        for cursor in range(start_ms, end_ms + 1, self._page_limit * step):
+            page_end = min(cursor + (self._page_limit - 1) * step, end_ms)
+            response = get_with_retries(
+                self._session,
+                f"{self.base_url}/fapi/v1/markPriceKlines",
+                params={
+                    "symbol": self._normalize_symbol(symbol),
+                    "interval": timeframe,
+                    "startTime": cursor,
+                    "endTime": page_end,
+                    "limit": self._page_limit,
+                },
+                timeout=self._timeout,
+                max_retries=self._max_retries,
+                backoff_seconds=self._retry_backoff_seconds,
+            )
+            response.raise_for_status()
+            raw = response.json()
+            if not isinstance(raw, list):
+                raise ValueError("Binance mark-price response must be a list")
+            pages.append(raw)
+            page = [
+                MarkPriceRecord(
+                    int(row[0]), Decimal(str(row[1])), "binance_usdm_mark_price_kline_open"
+                )
+                for row in raw
+            ]
+            if [row.timestamp_ms for row in page] != list(range(cursor, page_end + 1, step)):
+                raise ValueError(
+                    "incomplete mark-price coverage: repeated, truncated or missing page"
+                )
+            records.extend(page)
+        return build_mark_price_series(
+            records,
+            exchange="binance",
+            symbol=symbol,
+            interval_ms=step,
+            requested_start_ms=start_ms,
+            requested_end_ms=end_ms,
+            raw_responses=tuple(pages),
+        )
+
     def fetch_funding_history(self, symbol: str, start_ms: int, end_ms: int):
         from koval.engine.funding import (
             FundingRecord,

@@ -9,6 +9,7 @@ rather than a habit because a habit cannot fail the build.
 
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 
@@ -26,7 +27,9 @@ FORBIDDEN_PATHS = (
     "src/koval/adapters",
 )
 FORBIDDEN_PUBLIC_DOCUMENTS = (
+    "REALISTIC_TRADING_ROADMAP.md",
     "agents_docs/application_integration.md",
+    "agents_docs/assurance_review.md",
     "agents_docs/release_0_11_1.md",
 )
 REQUIRED_PUBLIC_PATHS = (
@@ -70,15 +73,10 @@ def test_no_private_path_is_tracked_by_git():
     assert tracked == [], f"private paths must not be tracked: {tracked}"
 
 
-@pytest.mark.skipif(not _is_git_worktree(), reason="tracked-file guard requires a Git checkout")
-def test_no_private_record_is_tracked_as_public_agent_documentation():
-    tracked = subprocess.run(
-        ["git", "-C", str(ROOT), "ls-files", "--", *FORBIDDEN_PUBLIC_DOCUMENTS],
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout.split()
-    assert tracked == [], f"private records must not be public agent documentation: {tracked}"
+def test_no_private_record_is_present_as_public_agent_documentation():
+    present = [path for path in FORBIDDEN_PUBLIC_DOCUMENTS if (ROOT / path).is_file()]
+
+    assert present == [], f"private records must not be public agent documentation: {present}"
 
 
 @pytest.mark.skipif(not _is_git_worktree(), reason="tracked-file guard requires a Git checkout")
@@ -112,3 +110,22 @@ def test_gitignore_does_not_hide_public_repository_automation():
     }
     hidden = [path for path in REQUIRED_PUBLIC_PATHS if path in ignored]
     assert hidden == [], f"public repository automation must not be ignored: {hidden}"
+
+
+def test_no_recorded_exchange_response_is_stored_as_a_public_fixture():
+    offenders = []
+    for path in (ROOT / "tests" / "fixtures").rglob("*.json"):
+        document = json.loads(path.read_text(encoding="utf-8"))
+        if (
+            isinstance(document, dict)
+            and {
+                "url",
+                "status",
+                "observed_at",
+                "body",
+            }
+            <= document.keys()
+        ):
+            offenders.append(str(path.relative_to(ROOT)))
+
+    assert offenders == [], f"recorded exchange responses must stay local: {offenders}"

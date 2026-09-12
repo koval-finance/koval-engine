@@ -246,6 +246,8 @@ class BinanceSandboxBroker:
         raise ValueError(f"symbol metadata not found: {symbol}")
 
     def submit_entry(self, intent: BrokerOrderIntent) -> BrokerOrderAck:
+        if self._tracked_orders or self._position is not None:
+            raise RuntimeError("sandbox entry requires reconciliation of existing exposure/orders")
         if intent.target != self.target:
             raise ValueError("entry order target does not match the Binance sandbox")
         if intent.order_type not in _SUPPORTED_ENTRY_TYPES:

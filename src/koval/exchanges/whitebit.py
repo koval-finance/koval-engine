@@ -7,6 +7,7 @@ endpoints are not implemented.
 
 from __future__ import annotations
 
+import time
 from decimal import Decimal
 from typing import Any, Final
 
@@ -67,7 +68,8 @@ class WhiteBITAdapter(ExchangeAdapter):
         self.base_url = _BASE_URL
         self._session = session or requests.Session()
         self._timeout = timeout
-        self._page_limit = page_limit
+        self._page_limit = min(page_limit, _MAX_LIMIT)
+        self.last_fetch_metadata: dict[str, object] = {}
         self._max_retries = max_retries
         self._retry_backoff_seconds = retry_backoff_seconds
 
@@ -78,23 +80,36 @@ class WhiteBITAdapter(ExchangeAdapter):
         start_ms: int,
         end_ms: int,
     ) -> np.ndarray:
-        if start_ms >= end_ms:
-            return np.empty((0, len(OHLCV_COLUMNS)), dtype=np.float64)
-        step_s = timeframe_ms(timeframe) // 1000
-        params_base = {
-            "market": self._market_symbol(symbol),
-            "interval": self._interval(timeframe),
-            "limit": self._page_limit,
+        step = timeframe_ms(timeframe)
+        # WhiteBIT returns only closed candles and may return its default page
+        # for a sub-interval request. Never query that forming-candle tail.
+        cutoff = min(end_ms, int(time.time() * 1000)) // step * step
+        first = (start_ms + step - 1) // step * step
+        self.last_fetch_metadata = {
+            "requested_start_ms": start_ms,
+            "requested_end_ms": end_ms,
+            "closed_cutoff_ms": cutoff,
+            "effective_start_ms": first,
+            "coverage_complete": False,
+            "actual_start_ms": None,
+            "actual_end_ms": None,
+            "row_count": 0,
         }
         pages: list[np.ndarray] = []
-        cursor_s = start_ms // 1000
-        end_s = end_ms // 1000
-        while cursor_s < end_s:
-            params = {**params_base, "start": cursor_s, "end": end_s}
+        # Bound both ends. Advancing start alone can lose the beginning of a
+        # range when the venue returns the last `limit` rows of that range.
+        for cursor in range(first, cutoff, self._page_limit * step):
+            page_end = min(cursor + self._page_limit * step, cutoff)
             resp = get_with_retries(
                 self._session,
                 f"{self.base_url}{_KLINE_PATH}",
-                params=params,
+                params={
+                    "market": self._market_symbol(symbol),
+                    "interval": self._interval(timeframe),
+                    "limit": self._page_limit,
+                    "start": cursor // 1000,
+                    "end": page_end // 1000,
+                },
                 timeout=self._timeout,
                 max_retries=self._max_retries,
                 backoff_seconds=self._retry_backoff_seconds,
@@ -102,22 +117,73 @@ class WhiteBITAdapter(ExchangeAdapter):
             resp.raise_for_status()
             raw = _parse_kline_rows(resp)
             if not raw:
-                break
+                if not pages and page_end == cutoff:
+                    return np.empty((0, len(OHLCV_COLUMNS)), dtype=np.float64)
+                raise RuntimeError("WhiteBIT incomplete OHLCV coverage: empty page")
             page = self._rows_to_ndarray(raw)
-            pages.append(page)
-            last_open_ms = int(np.max(page[:, 0]))
-            next_cursor_s = last_open_ms // 1000 + step_s
-            if next_cursor_s <= cursor_s:
+            selected = page[(page[:, 0] >= cursor) & (page[:, 0] < page_end)]
+            if not len(selected):
                 raise RuntimeError("WhiteBIT OHLCV pagination did not advance")
-            cursor_s = next_cursor_s
-            if len(raw) < self._page_limit:
-                break
-        if not pages:
-            return np.empty((0, len(OHLCV_COLUMNS)), dtype=np.float64)
-        return normalize_ohlcv_range(
-            np.vstack(pages),
-            start_ms=start_ms,
-            end_ms=end_ms,
+            for timestamp in np.unique(selected[:, 0]):
+                duplicates = selected[selected[:, 0] == timestamp]
+                if not np.all(duplicates == duplicates[0]):
+                    raise ValueError("WhiteBIT conflicting OHLCV duplicate")
+            selected = normalize_ohlcv_range(selected, start_ms=cursor, end_ms=page_end)
+            expected = np.arange(cursor, page_end, step)
+            if not np.array_equal(selected[:, 0], expected):
+                raise RuntimeError("WhiteBIT incomplete OHLCV coverage: truncated page or gap")
+            pages.append(selected)
+        rows = np.vstack(pages) if pages else np.empty((0, len(OHLCV_COLUMNS)), dtype=np.float64)
+        self.last_fetch_metadata.update(
+            coverage_complete=True,
+            actual_start_ms=int(rows[0, 0]) if len(rows) else None,
+            actual_end_ms=int(rows[-1, 0]) + step if len(rows) else None,
+            row_count=len(rows),
+        )
+        return rows
+
+    def fetch_fee_schedule(self, symbol: str):
+        """Current public default fees; never historical account-specific rates."""
+        from koval.engine.fee_evidence import FeeScheduleEvidence
+        from koval.engine.market_identity import canonical_symbol
+        from koval.engine.run_identity import content_sha256
+
+        response = get_with_retries(
+            self._session,
+            f"{self.base_url}/api/v4/public/markets",
+            params={},
+            timeout=self._timeout,
+            max_retries=self._max_retries,
+            backoff_seconds=self._retry_backoff_seconds,
+        )
+        response.raise_for_status()
+        raw = response.json()
+        venue_symbol = self._market_symbol(symbol)
+        matches = [
+            item for item in raw if isinstance(item, dict) and item.get("name") == venue_symbol
+        ]
+        if len(matches) != 1:
+            raise ValueError("WhiteBIT fee evidence requires one matching market")
+        item = matches[0]
+        expected_type = "futures" if self._market == "future" else "spot"
+        if item.get("type") != expected_type:
+            raise ValueError("WhiteBIT fee evidence market mismatch")
+        observed = time.time_ns() // 1_000_000
+        return FeeScheduleEvidence(
+            evidence_id=content_sha256({"response": raw, "observed_ms": observed}),
+            maker_bps=float(Decimal(str(item["makerFee"])) * 10000),
+            taker_bps=float(Decimal(str(item["takerFee"])) * 10000),
+            currency=str(item["money"]),
+            evidence_status="current_snapshot",
+            source="whitebit_v4_public_markets",
+            effective_from_ms=observed,
+            effective_to_ms=observed,
+            discount_treatment="not_observed",
+            tier_id="public_default",
+            exchange="whitebit",
+            market=self._market,
+            canonical_symbol=canonical_symbol(symbol),
+            raw_response=raw,
         )
 
     def fetch_funding_history(self, symbol: str, start_ms: int, end_ms: int):
@@ -132,7 +198,8 @@ class WhiteBITAdapter(ExchangeAdapter):
         raw_pages: list[object] = []
         rows: list[dict[str, object]] = []
         offset = 0
-        while True:
+        previous_oldest: int | None = None
+        while offset <= 1_000_000:
             response = get_with_retries(
                 self._session,
                 f"{self.base_url}/api/v4/public/funding-history/{self._market_symbol(symbol)}",
@@ -152,17 +219,26 @@ class WhiteBITAdapter(ExchangeAdapter):
                 raise ValueError("WhiteBIT funding history response must be a list")
             raw_pages.append(raw)
             page = [item for item in raw if isinstance(item, dict)]
+            if len(page) != len(raw):
+                raise ValueError("WhiteBIT funding history contains malformed records")
+            if page:
+                oldest = min(int(item["fundingTime"]) for item in page)
+                newest = max(int(item["fundingTime"]) for item in page)
+                if previous_oldest is not None and newest >= previous_oldest:
+                    raise RuntimeError("WhiteBIT funding pagination did not advance")
+                previous_oldest = oldest
             rows.extend(page)
             if len(raw) < _FUNDING_LIMIT:
                 break
             offset += len(raw)
-        timestamps = sorted(int(item["fundingTime"]) * 1000 for item in rows)
-        if len(timestamps) > 1:
-            interval = timestamps[1] - timestamps[0]
-        elif rows:
-            interval = (int(rows[0]["fundingTime"]) - int(rows[0]["rateCalculatedTime"])) * 1000
         else:
-            interval = 0
+            raise RuntimeError("WhiteBIT funding pagination exceeded the venue offset limit")
+        timestamps = sorted(int(item["fundingTime"]) * 1000 for item in rows)
+        if len(timestamps) < 2:
+            raise ValueError(
+                "WhiteBIT funding interval is unavailable from fewer than two settlements"
+            )
+        interval = timestamps[1] - timestamps[0]
         records = [
             FundingRecord(
                 symbol=str(item["market"]),
@@ -269,4 +345,6 @@ def _parse_kline_rows(resp: requests.Response) -> list:
             response=resp,
         )
     result = payload.get("result")
-    return result if isinstance(result, list) else []
+    if not isinstance(result, list):
+        raise ValueError("WhiteBIT kline result must be a list")
+    return result

@@ -1,0 +1,119 @@
+{
+  "fixture_id": "explicit_boundaries_v1",
+  "graph": {
+    "blocks": [
+      {
+        "id": "sig",
+        "type": "signal.every_bar",
+        "params": {
+          "direction": "bullish"
+        }
+      },
+      {
+        "id": "ent",
+        "type": "entry.long_only",
+        "params": {
+          "entry_type": "market"
+        }
+      },
+      {
+        "id": "ex",
+        "type": "exit.fixed_sl_tp",
+        "params": {
+          "sl_pct": 10.0,
+          "risk_reward": 2.0
+        }
+      },
+      {
+        "id": "rsk",
+        "type": "risk.pct_risk",
+        "params": {
+          "risk_pct": 0.2,
+          "leverage": 1.0
+        }
+      }
+    ],
+    "connections": [
+      {
+        "from": "sig",
+        "to": "ent"
+      },
+      {
+        "from": "ent",
+        "to": "ex"
+      },
+      {
+        "from": "ex",
+        "to": "rsk"
+      }
+    ]
+  },
+  "runtime_contract": {
+    "version": "koval_runtime_boundaries_v1",
+    "warmup_start_ms": 0,
+    "evaluation_start_ms": 120000,
+    "evaluation_end_ms": 240000,
+    "decision_clock": "bar_close",
+    "initial_balance": 10000,
+    "daily_baseline_equity": 11000,
+    "peak_equity": 12000,
+    "end_of_data_policy": "mark_at_last_close"
+  },
+  "execution": {
+    "version": "paper_ohlcv_realistic_v2",
+    "commission_bps": 0,
+    "spread_bps": 0,
+    "slippage_bps": 0
+  },
+  "candles": [
+    [
+      0,
+      100,
+      101,
+      99,
+      100,
+      10
+    ],
+    [
+      60000,
+      100,
+      101,
+      99,
+      100,
+      10
+    ],
+    [
+      120000,
+      100,
+      101,
+      99,
+      100,
+      10
+    ],
+    [
+      180000,
+      100,
+      106,
+      99,
+      105,
+      10
+    ],
+    [
+      240000,
+      105,
+      105,
+      105,
+      105,
+      10
+    ]
+  ],
+  "expected_metrics": {
+    "equity": 10010,
+    "balance": 10000,
+    "unrealized_pnl": 10,
+    "realized_pnl": 0,
+    "fees": 0,
+    "funding": 0,
+    "daily_pnl": -990
+  }
+}

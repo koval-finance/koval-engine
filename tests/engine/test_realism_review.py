@@ -71,6 +71,8 @@ def test_funding_cannot_silently_end_before_the_run():
         requested_start_ms=0,
         requested_end_ms=60_000,
         interval_ms=28_800_000,
+        settlement_anchor_ms=3_600_000,
+        schedule_source="archived_schedule",
     )
     broker = PaperBroker(10_000, profile=resolve_paper_profile(EXECUTION), funding=funding)
     with pytest.raises(ValueError, match="funding.*cover"):
@@ -88,6 +90,8 @@ def test_injected_broker_must_match_venue_even_when_no_trade_occurs():
         requested_start_ms=0,
         requested_end_ms=60_000,
         interval_ms=28_800_000,
+        settlement_anchor_ms=3_600_000,
+        schedule_source="archived_schedule",
     )
     broker = PaperBroker(10_000, funding=funding)
     with pytest.raises(ValueError, match="exchange"):

@@ -33,3 +33,14 @@ def test_context_from_raw_defaults_for_missing_keys():
     assert ctx["why_entry"] == []
     assert ctx["sl_history"] == []
     assert ctx["pattern"] == ""
+
+
+def test_recorded_decision_context_is_preserved_without_manufacturing_missing_values():
+    raw = {
+        "decision_context": {"decision_id": "s:9", "indicators": None},
+        "entry_order_id": "entry-1",
+    }
+    context = context_from_raw(raw, 1)
+    assert context["decision_context"] == raw["decision_context"]
+    assert context["entry_order_id"] == "entry-1"
+    assert context_from_raw({}, 2)["decision_context"] is None

@@ -193,6 +193,7 @@ class PaperBroker:
             raise ValueError("paper starting balance must be positive and finite") from exc
         if not math.isfinite(balance) or balance <= 0:
             raise ValueError("paper starting balance must be positive and finite")
+        self._journaled_ledger_sequence = 0
         self._ledger = AccountLedger(balance)
         self._position: BrokerPosition | None = None
         self._pending: _PendingOrder | None = None
@@ -211,6 +212,8 @@ class PaperBroker:
             raise ValueError("fee evidence requires a costed paper profile")
         self._instrument_specs = tuple(instrument_specs)
         self._mark_prices = mark_prices
+        if fee_schedule is not None and fee_schedule.market not in {None, self._market}:
+            raise ValueError("fee evidence market does not match paper market")
         if funding is not None and funding.market != self._market:
             raise ValueError("funding evidence market does not match paper market")
         if funding is not None and not funding.coverage_complete:
@@ -225,6 +228,7 @@ class PaperBroker:
             value.strip().lower()
             for value in (
                 *(spec.exchange for spec in self._instrument_specs),
+                None if fee_schedule is None else fee_schedule.exchange,
                 None if funding is None else funding.exchange,
                 None if mark_prices is None else mark_prices.exchange,
             )
@@ -239,6 +243,7 @@ class PaperBroker:
             self._canonical_symbol(value)
             for value in (
                 *(spec.canonical_symbol for spec in self._instrument_specs),
+                None if fee_schedule is None else fee_schedule.canonical_symbol,
                 None if funding is None else funding.canonical_symbol,
                 None if mark_prices is None else mark_prices.canonical_symbol,
             )
@@ -1760,6 +1765,12 @@ class PaperBroker:
                 realized_pnl=str(fill.realized_pnl),
                 metadata={
                     "paper": True,
+                    "cashflow_sequences": [
+                        entry.sequence
+                        for entry in self.ledger.entries
+                        if entry.sequence > self._journaled_ledger_sequence
+                        and entry.kind != "funding"
+                    ],
                     "kind": fill.kind,
                     "commission": fill.commission,
                     "liquidity_role": fill.liquidity_role,
@@ -1785,6 +1796,8 @@ class PaperBroker:
                 },
             )
         )
+
+        self._journaled_ledger_sequence = len(self.ledger.entries)
 
 
 def _optional_positive_float(value: object) -> float | None:

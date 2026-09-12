@@ -11,8 +11,8 @@ import datetime as _dt
 import math
 import uuid
 from collections.abc import Callable
-from copy import copy
-from dataclasses import dataclass, field, replace
+from copy import copy, deepcopy
+from dataclasses import asdict, dataclass, field, replace
 
 import numpy as np
 
@@ -37,12 +37,14 @@ from koval.engine.live_feed import LiveFeed, StopSignal
 from koval.engine.market_identity import resolve_market_identity
 from koval.engine.paper_broker import Fill, PaperBroker
 from koval.engine.paper_profile import resolve_paper_profile
+from koval.engine.run_boundaries import resolve_runtime_boundaries
 from koval.engine.run_identity import (
     CandleStreamIdentity,
     build_run_identity,
     content_sha256,
     execution_evidence_manifest,
 )
+from koval.engine.runtime_journal import RuntimeJournal
 from koval.exchanges.auth import safe_exception_message
 from koval.exchanges.base import timeframe_ms
 from koval.exchanges.execution_compatibility import compatibility_for
@@ -71,6 +73,7 @@ class LiveEngineConfig:
     peak_equity: float | None = None
     exchange: str | None = None
     end_of_data_policy: str = "flatten_at_last_close"
+    runtime_contract: dict | None = None
 
 
 def _noop(_x: object) -> None:
@@ -318,13 +321,38 @@ class LiveEngine:
         on_fill: Callable[[dict], None] = _noop,
         on_audit: Callable[[dict], None] = _noop,
         on_incident: Callable[[dict], None] = _noop,
+        on_record: Callable[[dict], None] | None = None,
     ) -> None:
+        self._boundaries = resolve_runtime_boundaries(config.runtime_contract)
+        if self._boundaries is not None:
+            self._boundaries.validate_inputs(
+                timeframe=config.timeframe, initial_capital=config.initial_capital
+            )
+            for name in ("daily_baseline_equity", "peak_equity"):
+                value = getattr(config, name)
+                if value is not None and value != getattr(self._boundaries, name):
+                    raise ValueError(f"runtime contract conflicts with {name}")
+            config = replace(
+                config,
+                daily_baseline_equity=self._boundaries.daily_baseline_equity,
+                peak_equity=self._boundaries.peak_equity,
+                end_of_data_policy=self._boundaries.end_of_data_policy,
+                runtime_contract=self._boundaries.as_dict(),
+            )
         _validate_live_config(config)
         self._strategy = assemble_from_graph(graph)
         self._strategy.config = {"symbol": config.symbol}
         self._config = config
         self._terminal_policy: str | None = None
         self._session_id = session_id or uuid.uuid4().hex
+        self._journal = RuntimeJournal(self._session_id, on_record)
+        self._last_input: np.ndarray | None = None
+        self._ledger_cursor = 0
+        self._cashflow_fill_ids: dict[int, str] = {}
+        self._decision_id: str | None = None
+        self._decision_context: dict | None = None
+        self._open_decision_context: dict | None = None
+        self._pending_decision_context: dict | None = None
         self._profile = resolve_paper_profile(config.execution)
         self._broker = broker or PaperBroker(
             config.initial_capital,
@@ -379,20 +407,38 @@ class LiveEngine:
                     previous_timestamp_ms=previous_timestamp_ms,
                     timeframe=config.timeframe,
                 )
+                if self._boundaries is not None:
+                    expected = (
+                        previous_timestamp_ms + timeframe_ms(config.timeframe)
+                        if previous_timestamp_ms is not None
+                        else self._boundaries.warmup_start_ms
+                    )
+                    if (
+                        validated[0] != expected
+                        or validated[0] >= self._boundaries.evaluation_start_ms
+                    ):
+                        raise ValueError("runtime warmup coverage does not match history")
+                self._accept_input(validated, phase="warmup")
                 self._window.append(validated)
+                self._journal.write("bar_processed", int(validated[0]), {"phase": "warmup"})
                 previous_timestamp_ms = int(validated[0])
-            for row in history[-config.max_window :]:
+            warmup = history if self._boundaries is not None else history[-config.max_window :]
+            for row in warmup:
                 self._warmup_identity.append(row)
-        self._on_event = on_event
-        self._on_trade = on_trade
+        self._on_event = self._record_callback("event", on_event)
+        self._on_trade = self._record_callback("trade", on_trade)
         self._on_bar = on_bar
         self._on_status = on_status
-        self._on_order_intent = on_order_intent
-        self._on_order_ack = on_order_ack
-        self._on_fill = on_fill
-        self._on_audit = on_audit
-        self._on_incident = on_incident
-        self._bar_index = len(self._window.c)
+        self._on_order_intent = self._record_callback("order_intent", on_order_intent)
+        self._on_order_ack = self._record_callback("order_ack", on_order_ack)
+        self._on_fill = self._record_callback("fill", on_fill)
+        self._on_audit = self._record_callback("audit", on_audit)
+        self._on_incident = self._record_callback("incident", on_incident)
+        self._bar_index = (
+            self._warmup_identity.as_dict()["row_count"]
+            if self._boundaries
+            else len(self._window.c)
+        )
         self._trade_id = 0
         self._pending_setup: TradeSetup | None = None
         self._open_setup: TradeSetup | None = None
@@ -412,6 +458,59 @@ class LiveEngine:
         self._containment_attempted = False
         self._containment_in_progress = False
         self._containment_confirmed: bool | None = None
+
+    @property
+    def checkpoint(self) -> dict:
+        """Last acknowledged archive boundary; never an exposure-resume token."""
+        return self._journal.checkpoint
+
+    def _record_callback(self, kind: str, callback: Callable[[dict], None]):
+        def deliver(payload: dict) -> None:
+            value = deepcopy(payload)
+            raw_timestamp = value.get("timestamp_ms")
+            timestamp = int(
+                raw_timestamp
+                if raw_timestamp is not None
+                else (self._window.ts[-1] if self._window.ts else 0)
+            )
+            if kind == "order_intent":
+                value["decision_id"] = self._decision_id
+                decision_time = value.get("metadata", {}).get("decision_timestamp_ms")
+                if decision_time is not None:
+                    timestamp = int(decision_time)
+                    value["timestamp_basis"] = "decision_clock"
+            if kind == "fill":
+                value["fill_id"] = f"{self._session_id}:fill:{self._journal.sequence + 1}"
+                for sequence in value.get("metadata", {}).get("cashflow_sequences", []):
+                    self._cashflow_fill_ids[sequence] = value["fill_id"]
+            self._journal.write(kind, timestamp, value)
+            callback(value)
+
+        return deliver
+
+    def _accept_input(self, row: np.ndarray, *, phase: str) -> None:
+        ts = int(row[0])
+        self._journal.write(
+            "bar_received",
+            ts,
+            {
+                "bar_id": f"{self._session_id}:{self._config.timeframe}:{ts}",
+                "ohlcv": row.tolist(),
+                "phase": phase,
+                "available_timestamp_ms": ts + timeframe_ms(self._config.timeframe),
+            },
+        )
+        self._last_input = row.copy()
+
+    def _record_account(self) -> None:
+        for entry in self._account.ledger.entries[self._ledger_cursor :]:
+            payload = asdict(entry)
+            payload["cashflow_id"] = f"{self._session_id}:cashflow:{entry.sequence}"
+            payload["fill_id"] = self._cashflow_fill_ids.get(entry.sequence)
+            self._journal.write("cashflow", entry.timestamp_ms, payload)
+            self._ledger_cursor = entry.sequence
+        ts = self._window.ts[-1] if self._window.ts else 0
+        self._journal.write("account_snapshot", ts, asdict(self._account.snapshot()))
 
     def _validate_broker_config(self, config: LiveEngineConfig) -> None:
         if not isinstance(self._broker, PaperBroker):
@@ -454,6 +553,7 @@ class LiveEngine:
             ),
             strategy_sha256=self._strategy_sha256,
             run_parameters={
+                **({"runtime_contract": self._boundaries.as_dict()} if self._boundaries else {}),
                 "initial_capital": self._config.initial_capital,
                 "max_window": self._config.max_window,
                 "higher_timeframe": self._config.higher_timeframe,
@@ -501,7 +601,18 @@ class LiveEngine:
         try:
             try:
                 for row in feed.bars(stop):
+                    if (
+                        self._boundaries is not None
+                        and float(row[0]) >= self._boundaries.evaluation_end_ms
+                    ):
+                        break
                     self._process_bar(row)
+                if self._boundaries is not None and not stop.is_set():
+                    expected = self._boundaries.evaluation_end_ms - timeframe_ms(
+                        self._config.timeframe
+                    )
+                    if not self._window.ts or self._window.ts[-1] != expected:
+                        raise ValueError("runtime evaluation coverage is incomplete")
             except Exception:
                 if self._broker.target != "paper" and self._containment_confirmed is not True:
                     self._contain_exposure("session_error")
@@ -524,14 +635,52 @@ class LiveEngine:
             self._emit(EventType.SESSION_END, {})
 
     def _process_bar(self, row: object) -> None:
+        candidate = _validate_ohlcv_row(
+            row, previous_timestamp_ms=None, timeframe=self._config.timeframe
+        )
+        if self._last_input is not None and candidate[0] == self._last_input[0]:
+            same = np.array_equal(candidate, self._last_input)
+            self._journal.write(
+                "bar_duplicate" if same else "bar_conflict",
+                int(candidate[0]),
+                {"ohlcv": candidate.tolist()},
+            )
+            if same:
+                return
+            raise ValueError("conflicting OHLCV reconnect duplicate")
+        if self._window.ts and candidate[0] != self._window.ts[-1] + timeframe_ms(
+            self._config.timeframe
+        ):
+            self._journal.write(
+                "bar_gap",
+                int(candidate[0]),
+                {
+                    "expected_timestamp_ms": self._window.ts[-1]
+                    + timeframe_ms(self._config.timeframe),
+                    "received_timestamp_ms": int(candidate[0]),
+                },
+            )
         row = _validate_ohlcv_row(
             row,
             previous_timestamp_ms=self._window.ts[-1] if self._window.ts else None,
             timeframe=self._config.timeframe,
         )
         ts, o, h, low, c, v = (int(row[0]), *(float(x) for x in row[1:6]))
+        if self._boundaries is not None and not self._window.ts:
+            if ts != self._boundaries.warmup_start_ms:
+                raise ValueError("runtime warmup coverage is incomplete")
+        phase = (
+            "warmup"
+            if self._boundaries and ts < self._boundaries.evaluation_start_ms
+            else "evaluation"
+        )
+        self._accept_input(row, phase=phase)
         self._bar_index += 1
         self._window.append(row)
+        if self._boundaries is not None and ts < self._boundaries.evaluation_start_ms:
+            self._warmup_identity.append(row)
+            self._journal.write("bar_processed", ts, {"phase": phase})
+            return
         self._primary_identity.append(row)
         process_bar = getattr(self._broker, "process_bar", None)
         paper_fills = (
@@ -550,6 +699,7 @@ class LiveEngine:
         self._poll_broker_fills()
         self._account.on_bar(equity=self._broker_equity(), timestamp_ms=ts)
         self._inject_state(ts, o, h, low, c, v)
+        self._begin_decision(ts)
         on_bar = getattr(self._strategy, "on_bar", None)
         if on_bar is not None:
             on_bar()
@@ -576,8 +726,9 @@ class LiveEngine:
             self._try_enter(ts, c)
         elif self._broker_position() is not None:
             self._update_protection()
-        self._emit_bar(ts, o, h, low, c)
+        self._emit_bar(ts, o, h, low, c, v)
         self._emit_status()
+        self._journal.write("bar_processed", ts, {"phase": phase})
 
     def _update_protection(self) -> None:
         # Snapshot both hooks before touching either leg of a possible OCO pair.
@@ -617,7 +768,25 @@ class LiveEngine:
                     actual_target = ack.metadata.get("target_price", actual_target)
                 self._open_setup.take_profit = float(actual_target)
 
+    def _begin_decision(self, ts: int) -> None:
+        self._decision_context = {
+            "version": "koval_decision_context_v1",
+            "bar_timestamp_ms": ts,
+            "decision_timestamp_ms": ts + timeframe_ms(self._config.timeframe),
+            "history_start_ms": self._window.ts[0] if self._window.ts else None,
+            "history_end_ms": ts + timeframe_ms(self._config.timeframe),
+            "history_bars": len(self._window.ts),
+            "account": asdict(self._account.snapshot()),
+            "indicators": None,
+        }
+        self._decision_id = self._journal.write(
+            "decision", ts + timeframe_ms(self._config.timeframe), self._decision_context
+        )
+        self._decision_context["decision_id"] = self._decision_id
+
     def _try_enter(self, ts: int, close: float) -> None:
+        if self._decision_context is None or self._decision_context["bar_timestamp_ms"] != ts:
+            self._begin_decision(ts)
         direction = None
         if self._strategy.should_long():
             direction = "long"
@@ -625,6 +794,11 @@ class LiveEngine:
             direction = "short"
         self._entries_halted = self._strategy.was_blocked()
         if direction is None:
+            self._journal.write(
+                "decision_result",
+                ts + timeframe_ms(self._config.timeframe),
+                {"decision_id": self._decision_id, "outcome": "no_entry"},
+            )
             return
         if not self._strategy._execute_filters():  # noqa: SLF001 - own brain, mirrors bt_adapter
             self._emit(EventType.FILTER_REJECTED, {"direction": direction})
@@ -654,7 +828,20 @@ class LiveEngine:
                 "decision_timestamp_ms": ts + timeframe_ms(self._config.timeframe),
             },
         )
+        self._journal.write(
+            "decision_result",
+            ts + timeframe_ms(self._config.timeframe),
+            {
+                "decision_id": self._decision_id,
+                "outcome": "entry",
+                "direction": direction,
+                "intent_id": intent.intent_id,
+                "why_entry": list(setup.why_entry),
+            },
+        )
         self._on_order_intent(_intent_to_dict(intent))
+        self._decision_context["why_entry"] = list(setup.why_entry)
+        self._pending_decision_context = deepcopy(self._decision_context)
         self._pending_setup = setup
         self._external_entry_pending = True
         self._last_entry_client_order_id = intent.client_order_id
@@ -769,6 +956,7 @@ class LiveEngine:
         self._trade_id += 1
         setup = self._pending_setup
         self._open_setup = setup
+        self._open_decision_context = deepcopy(self._pending_decision_context)
         self._open_entry_ts = fill.timestamp_ms
         self._open_entry_fill = fill
         self._pending_setup = None
@@ -1158,6 +1346,9 @@ class LiveEngine:
         gross = (exit_price - entry_price) * exit_quantity * sign
         net = exit_realized - entry_commission
         return {
+            "trade_id": f"{self._session_id}:trade:{self._trade_id}",
+            "entry_order_id": self._last_entry_client_order_id,
+            "decision_context": deepcopy(self._open_decision_context),
             "entry_time": _iso(self._open_entry_ts),
             "exit_time": _iso(fill.timestamp_ms),
             "direction": direction,
@@ -1328,6 +1519,7 @@ class LiveEngine:
         s.close, s.high, s.low, s.open, s.volume = c, h, low, o, v
         s.bar_index = self._bar_index
         s.timestamp_ms = ts
+        s.decision_timestamp_ms = ts + timeframe_ms(self._config.timeframe)
         s.closes = np.array(self._window.c, dtype=float)
         s.highs = np.array(self._window.h, dtype=float)
         s.lows = np.array(self._window.low, dtype=float)
@@ -1385,7 +1577,7 @@ class LiveEngine:
             }
         )
 
-    def _emit_bar(self, ts, o, h, low, c) -> None:
+    def _emit_bar(self, ts, o, h, low, c, v) -> None:
         self._on_bar(
             {
                 "ts": ts,
@@ -1393,12 +1585,14 @@ class LiveEngine:
                 "high": h,
                 "low": low,
                 "close": c,
+                "volume": v,
                 "equity": self._broker_equity(),
                 "unrealized_pnl": self._broker_equity() - self._broker_balance(),
             }
         )
 
     def _emit_status(self, *, terminal: bool = False) -> None:
+        self._record_account()
         snap = self._account.snapshot()
         pos = self._broker_position()
         self._on_status(

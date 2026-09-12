@@ -82,14 +82,14 @@ def _whitebit_kline(open_seconds: int, idx: int) -> list:
 
 @responses.activate
 def test_fetch_ohlcv_basic_and_column_remap():
-    body = [_whitebit_kline(1_700_000_000 + i * 60, i) for i in range(3)]
+    body = [_whitebit_kline(1_700_000_040 + i * 60, i) for i in range(3)]
     responses.add(responses.GET, KLINE_URL, json=_kline_api_body(body), status=200)
 
     a = WhiteBITAdapter()
-    out = a.fetch_ohlcv("BTC/USDT", "1m", 1_700_000_000_000, 1_700_000_180_000)
+    out = a.fetch_ohlcv("BTC/USDT", "1m", 1_700_000_040_000, 1_700_000_220_000)
 
     assert out.shape == (3, 6)
-    assert out[0, 0] == 1_700_000_000_000  # converted s -> ms
+    assert out[0, 0] == 1_700_000_040_000  # converted s -> ms
     assert out[0, 1] == 100.0  # open
     assert out[0, 2] == 101.0  # high (column 3 in source becomes col 2 here)
     assert out[0, 3] == 99.0  # low
@@ -99,19 +99,19 @@ def test_fetch_ohlcv_basic_and_column_remap():
     call = responses.calls[0].request
     assert "market=BTC_USDT" in call.url
     assert "interval=1m" in call.url
-    assert "start=1700000000" in call.url
-    assert "end=1700000180" in call.url
+    assert "start=1700000040" in call.url
+    assert "end=1700000220" in call.url
     assert "limit=1440" in call.url
 
 
 @responses.activate
 def test_fetch_ohlcv_enforces_range_order_and_uniqueness():
-    start_s = 1_700_000_000
+    start_s = 1_700_000_040
     body = [
         _whitebit_kline(start_s + 120, 2),
         _whitebit_kline(start_s, 0),
         _whitebit_kline(start_s + 60, 1),
-        _whitebit_kline(start_s + 60, 99),
+        _whitebit_kline(start_s + 60, 1),
         _whitebit_kline(start_s + 180, 3),
     ]
     responses.add(responses.GET, KLINE_URL, json=_kline_api_body(body), status=200)
@@ -144,20 +144,20 @@ def test_fetch_ohlcv_raises_when_api_returns_success_false():
     )
     a = WhiteBITAdapter()
     with pytest.raises(requests.HTTPError, match="Market is not available"):
-        a.fetch_ohlcv("INVALID", "1h", 1_700_000_000_000, 1_700_000_060_000)
+        a.fetch_ohlcv("INVALID", "1m", 1_700_000_040_000, 1_700_000_100_000)
 
 
 @responses.activate
 def test_fetch_ohlcv_empty_response():
     responses.add(responses.GET, KLINE_URL, json=_kline_api_body([]), status=200)
     a = WhiteBITAdapter()
-    out = a.fetch_ohlcv("BTC/USDT", "1m", 1_700_000_000_000, 1_700_000_060_000)
+    out = a.fetch_ohlcv("BTC/USDT", "1m", 1_700_000_040_000, 1_700_000_100_000)
     assert out.shape == (0, 6)
 
 
 @responses.activate
 def test_fetch_ohlcv_retries_rate_limit_response():
-    start_s = 1_700_000_000
+    start_s = 1_700_000_040
     responses.add(responses.GET, KLINE_URL, status=429, headers={"Retry-After": "0"})
     responses.add(
         responses.GET,
@@ -179,25 +179,25 @@ def test_fetch_ohlcv_retries_rate_limit_response():
 
 @responses.activate
 def test_fetch_ohlcv_paginates_across_limit():
-    page_a = [_whitebit_kline(1_700_000_000 + i * 60, i) for i in range(2)]
-    page_b = [_whitebit_kline(1_700_000_120 + i * 60, i + 2) for i in range(2)]
-    page_c: list = []
+    page_a = [_whitebit_kline(1_700_000_040 + i * 60, i) for i in range(2)]
+    page_b = [_whitebit_kline(1_700_000_160 + i * 60, i + 2) for i in range(2)]
+    page_c = [_whitebit_kline(1_700_000_280, 4)]
 
     responses.add(responses.GET, KLINE_URL, json=_kline_api_body(page_a), status=200)
     responses.add(responses.GET, KLINE_URL, json=_kline_api_body(page_b), status=200)
     responses.add(responses.GET, KLINE_URL, json=_kline_api_body(page_c), status=200)
 
     a = WhiteBITAdapter(page_limit=2)
-    out = a.fetch_ohlcv("BTC/USDT", "1m", 1_700_000_000_000, 1_700_000_300_000)
-    assert out.shape == (4, 6)
-    assert out[0, 0] == 1_700_000_000_000
-    assert out[-1, 0] == 1_700_000_180_000
+    out = a.fetch_ohlcv("BTC/USDT", "1m", 1_700_000_040_000, 1_700_000_340_000)
+    assert out.shape == (5, 6)
+    assert out[0, 0] == 1_700_000_040_000
+    assert out[-1, 0] == 1_700_000_280_000
     assert len(responses.calls) == 3
 
 
 @responses.activate
 def test_fetch_ohlcv_rejects_non_advancing_pagination():
-    start_s = 1_700_000_000
+    start_s = 1_700_000_040
     repeated = [_whitebit_kline(start_s + i * 60, i) for i in range(2)]
     responses.add(responses.GET, KLINE_URL, json=_kline_api_body(repeated), status=200)
     responses.add(responses.GET, KLINE_URL, json=_kline_api_body(repeated), status=200)

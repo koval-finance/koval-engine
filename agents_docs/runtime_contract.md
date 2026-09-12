@@ -1,4 +1,4 @@
-# Runtime and identity contract — 0.11
+# Runtime and identity contract
 
 Purpose: the MIT-owned contract that paper runtimes, backtest plugins, and hosts
 consume. This document describes engine behavior; plugin adoption and application
@@ -6,11 +6,76 @@ acceptance must be measured independently.
 
 ## Versions and compatibility
 
-The package release is `0.11.1`. `ENGINE_PROTOCOL_VERSION` remains `1` because
-the plugin spec/result interfaces have no breaking structural change. The
-runtime behavior identifier is `koval_runtime_v2`; the run identity schema is
-`koval_run_identity_v1`. Both constants are exported from
-`koval.engine.run_identity`.
+The package release is `0.12.0`. `ENGINE_PROTOCOL_VERSION` is `2`;
+protocol `1` remains accepted only without an explicit `runtime_contract`.
+The fill/runtime identifier remains `koval_runtime_v2`; input identity remains
+`koval_run_identity_v1`. These names do not certify venue realism.
+
+`EngineRunSpec.runtime_contract` and `LiveEngineConfig.runtime_contract` accept
+an optional strict dictionary defined by `RuntimeBoundaries` in
+`koval.engine.run_boundaries`. Unknown/missing fields fail. See the installed
+`koval/examples/runtime/explicit_boundaries_v1.json` for a complete graph example.
+
+| Field | Meaning |
+| --- | --- |
+| `version` | `koval_runtime_boundaries_v1` |
+| `warmup_start_ms` | First required input opening timestamp |
+| `evaluation_start_ms`, `evaluation_end_ms` | Aligned half-open evaluation interval |
+| `decision_clock` | `bar_close`; decisions become available at open + timeframe |
+| `initial_balance` | Must equal run capital; initial exposure is flat |
+| `daily_baseline_equity`, `peak_equity` | Explicit initial risk baselines |
+| `end_of_data_policy` | `mark_at_last_close` or `flatten_at_last_close` |
+
+Warmup may arrive through history or the feed. All actual warmup bars are
+identified and journaled, including those later evicted by `max_window`. No
+strategy hooks, order matching, fees or funding run during warmup. Missing first
+input, discontinuity and incomplete natural evaluation endings fail. Bars at or
+after evaluation end are not processed. A stop/error still contains exposure.
+The explicit contract owns the ending policy; separate supplied risk baselines
+must agree. Existing configs without this dictionary preserve legacy semantics.
+`timestamp_ms` remains the candle-open timestamp; `decision_timestamp_ms` is the
+close-time availability clock. HTF uses only confirmed closed buckets.
+
+Capability negotiation automatically requires `runtime_boundaries_v1` when the
+contract is present. An older plugin must refuse it; importing the dataclass is
+not implementation. Plugins must validate timeframe alignment and actual input
+coverage and independently reproduce the public fixture before advertising it.
+
+## Input and execution archive boundary
+
+`LiveEngine(on_record=sink)` calls a synchronous host-owned sink separately from
+UI callbacks. Successful return acknowledges one record; a failure before bar
+acceptance prevents the decision. A failure after broker effects is an uncertain
+archive tail and requires containment/reconciliation, never blind replay.
+
+`koval_runtime_journal_v1` carries `session_id`, ordered `sequence`, `record_id`,
+`event_timestamp_ms`, `received_timestamp_ms`, `kind`, payload, previous hash and
+SHA-256. Receipt time is when the engine journals the event, not a claimed venue
+network arrival time. `bar_received` stores all six OHLCV values before processing;
+`available_timestamp_ms` distinguishes candle-open time from close availability.
+The regular `on_bar` callback also includes volume.
+
+Decision records capture the actual retained window and account; entry outcomes,
+intents, acknowledgements, fills, trades, incidents, ledger deltas and account
+snapshots follow in runtime order. Unrecorded indicators are `None`. Trade context
+preserves the original entry decision across delayed fills. Paper execution
+cashflows link to their fill IDs; funding stays separately identified. External
+fills retain venue/client IDs; missing venue attribution must not be inferred.
+
+`checkpoint` exposes the last acknowledged sequence/hash, accepted bar and fully
+processed bar. A true `archive_enabled` requires a sink; the default no-sink
+checkpoint does not assert durable storage. `verify_runtime_records` verifies an
+ordered prefix. Compare its result to a separately stored terminal checkpoint to
+detect missing final records. Hashes alone prove neither source authenticity nor
+archive retention. Hosts must use a fresh session ID per independent run and
+provide single-writer ownership, durable storage and checkpoint retention.
+
+An identical reconnect repeat of the last input is recorded and ignored. A
+conflicting repeat, older out-of-order input or gap is disclosed and fails.
+This checkpoint identifies a processing boundary, not a supported broker resume
+snapshot. Paper requires deterministic replay; sandbox requires reconciliation
+and containment before any new decision. No automatic adoption of exposure is
+provided.
 
 Existing paper fill profiles retain their names and matching rules:
 `paper_legacy_v1`, `paper_ohlcv_fixed_v1`, `paper_ohlcv_realistic_v2`.

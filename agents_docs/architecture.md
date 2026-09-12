@@ -108,10 +108,16 @@ The current liquidation primitive is deliberately limited to one cross-margin
 position using quote-currency collateral; isolated and portfolio margin require
 separately versioned evidence and behavior.
 
-The 0.11 runtime calls both dynamic protection hooks after matching each bar.
+The current runtime calls both dynamic protection hooks after matching each bar.
 Its shared vocabulary, evidence transport, identity encoding, spot-refusal policy,
 and plugin adoption rules are specified in [runtime_contract.md](runtime_contract.md).
 Review findings and source rationale are in [realism_review.md](realism_review.md).
+
+`run_boundaries.py` owns the optional common warmup/evaluation and initial-risk
+contract; `runtime_journal.py` owns ordered archive records and integrity checks.
+LiveEngine remains independent of host storage. See
+[runtime_contract.md](runtime_contract.md) for capability negotiation and archive
+boundaries, and [realism_review.md](realism_review.md) for acceptance limits.
 
 Update this file when: a module is added, moved, or renamed; the execution
 flow gains or loses a stage; the plugin protocol changes.

@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 import re
+import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 README = ROOT / "README.md"
 CONTRIBUTING = ROOT / "CONTRIBUTING.md"
 CHANGELOG = ROOT / "CHANGELOG.md"
+
+
+def _project_version() -> str:
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    return str(project["project"]["version"])
 
 
 def test_readme_does_not_make_unscoped_execution_model_claims():
@@ -55,6 +61,34 @@ def test_changelog_scopes_long_lived_credential_claim_to_pypi():
 
     assert "No long-lived credentials exist in CI" not in changelog
     assert "No long-lived PyPI credential is used" in changelog
+
+
+def test_changelog_has_one_unreleased_section():
+    changelog = CHANGELOG.read_text(encoding="utf-8")
+
+    assert changelog.count("## [Unreleased]") == 1
+
+
+def test_changelog_has_a_dated_entry_and_links_for_the_project_version():
+    changelog = CHANGELOG.read_text(encoding="utf-8")
+    version = _project_version()
+
+    assert re.search(
+        rf"^## \[{re.escape(version)}\] - \d{{4}}-\d{{2}}-\d{{2}}$", changelog, re.MULTILINE
+    )
+    assert (
+        f"[Unreleased]: https://github.com/koval-finance/koval-engine/compare/v{version}...HEAD"
+        in changelog
+    )
+    assert f"[{version}]: https://github.com/koval-finance/koval-engine/" in changelog
+
+
+def test_readme_names_the_current_minor_series():
+    readme = README.read_text(encoding="utf-8")
+    version = _project_version()
+    minor_series = version.rsplit(".", 1)[0]
+
+    assert f"`{minor_series}.x` series" in readme
 
 
 def test_public_docstrings_do_not_claim_legacy_validation_is_unchanged():

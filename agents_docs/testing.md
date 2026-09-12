@@ -21,6 +21,17 @@ release docs, sdist contents.
 `tests/safety/` pins the no-real-money invariant and is load-bearing; treat
 a failure there as a stop-everything signal.
 
+## Runtime assurance coverage
+
+`test_run_boundaries.py` exercises explicit preroll/evaluation, baseline risk,
+capability refusal, window truncation and future mutation through an actual graph.
+`test_runtime_journal.py` checks input-before-decision ordering, volume, duplicate
+and conflict handling, archive failures, linked fills/cashflows and hash integrity.
+`test_evidence_assurance.py` and `test_whitebit_coverage.py` exercise malformed or
+incomplete venue evidence, including synthetic response regressions.
+`test_sandbox_uncertain_entry.py` checks that uncertain orders cannot be blindly
+resubmitted. These offline tests do not authenticate to any exchange.
+
 ## The `backtrader` marker
 
 Tests marked `backtrader` exercise a separately distributed GPL plugin —
