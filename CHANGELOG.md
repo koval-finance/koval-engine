@@ -6,6 +6,42 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.12.1] - 2026-09-20
+
+### Execution correctness
+
+- Strict MIT execution-evidence JSON transport and per-run unmeasured-accuracy
+  disclosure. Preserve exact decimal strings and reject unsupported nested fields.
+- Remove future-close influence from partial-entry margin. Anchor protection
+  latency to actual first fill. Reject non-quote collateral and off-grid funding
+  in the full runtime instead of silently producing inconsistent cashflows.
+
+### Fixed
+
+- Convert WhiteBIT public `makerFee` and `takerFee` percentages to basis points
+  with the documented multiplier of 100. The previous multiplier overstated a
+  documented `0.1%` fee by 100 times.
+
+### Performance
+
+- Graph strategies offer an optional `prepare_backtest(candles, history_bars=...)`
+  hook for hosts with archived primary candles. EMA crosses, RSI crosses, trend
+  bias, volatility regime, EMA trend policy and ATR policy consume prepared
+  scalars while graph/account/order state still advances once per closed bar.
+- Pure NumPy kernels batch independent finite history windows, preserving each
+  SMA seed, recurrence operation order and previous value within the current
+  window. Growing prefixes are calculated once; rolling windows use bounded
+  tiles. No new dependency, shorter history, approximate continuous EMA, or
+  cached simulation output is involved. Unsupported nodes keep scalar execution.
+- Prepared prices normalize to the host's float64 history convention. Timestamp
+  and window checks prevent applying a table row to a different context. Nonfinite
+  or unordered feeds disable preparation; no price/history rows are discarded.
+
+### Compatibility and limits
+
+- `ENGINE_PROTOCOL_VERSION`, `EngineRunSpec`, fill profiles and scalar indicator
+  helpers are unchanged. Hosts that never call the hook keep the previous path.
+
 ## [0.12.0] - 2026-09-12
 
 ### Added
@@ -304,7 +340,8 @@ First public release.
 - The MIT/GPL boundary is enforced by a test rather than by convention: no file in this package may import Backtrader.
 - Releases are published to PyPI through Trusted Publishing (OIDC) with PEP 740 attestations. No long-lived PyPI credential is used in CI.
 
-[Unreleased]: https://github.com/koval-finance/koval-engine/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/koval-finance/koval-engine/compare/v0.12.1...HEAD
+[0.12.1]: https://github.com/koval-finance/koval-engine/compare/v0.12.0...v0.12.1
 [0.12.0]: https://github.com/koval-finance/koval-engine/compare/v0.11.1...v0.12.0
 [0.11.1]: https://github.com/koval-finance/koval-engine/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/koval-finance/koval-engine/compare/v0.10.0...v0.11.0

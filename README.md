@@ -15,6 +15,10 @@ Version 0.12 adds protocol 2 with explicit warmup/evaluation boundaries and a
 synchronous runtime journal for auditable host archives. It also strengthens
 WhiteBIT acquisition coverage, execution-evidence validation, uncertain sandbox
 entry containment, and trade narratives.
+The 0.12.1 patch adds an optional backtest preparation hook that computes exact
+finite-window EMA/RSI/ATR values for built-in graph nodes in batch. It also
+hardens evidence decoding, fill causality, funding-grid validation and WhiteBIT
+fee conversion without changing the engine protocol or fill profiles.
 See the [runtime and plugin migration contract](https://github.com/koval-finance/koval-engine/blob/main/agents_docs/runtime_contract.md)
 and the [execution realism review](https://github.com/koval-finance/koval-engine/blob/main/agents_docs/realism_review.md).
 

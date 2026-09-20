@@ -141,3 +141,23 @@ suite; the engine additionally tests that a permitted long can follow a refusal.
 
 Update this file when: a finding is reopened, its regression coverage changes,
 or new measured cross-runtime or sandbox acceptance evidence is available.
+
+## 0.12.1 corrections and evidence transport
+
+`koval.engine.execution_evidence.decode_execution_evidence` is the strict MIT
+JSON transport for funding, fee, instrument, mark and proxy dataclasses. Unknown
+nested fields and lossy numeric inputs are rejected. Decimal values round-trip
+as strings. `ExecutionEvidence.realism_report()` distinguishes supplied inputs,
+assumptions and unavailable effects; empirical accuracy remains unmeasured.
+
+Paper carried-entry margin uses the matching price, never the later candle close.
+Protection latency starts at the first actual fill and is not restarted by later
+partial fills. Quote-denominated accounting rejects other collateral currencies.
+The full live runtime validates funding against its execution grid before any
+decision: an intrabar settlement requires finer candles and cannot silently be
+carried into the next bar. Direct broker callers must call
+`validate_execution_grid(interval_ms)` when they select a timeframe.
+
+Historical evidence is bounded. The host must stop at coverage exhaustion or
+implement an archived, replayable update lifecycle; static imports do not observe
+future funding/marks. No 99% realism or maximum 1% error claim is justified.

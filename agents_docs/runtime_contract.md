@@ -6,7 +6,7 @@ acceptance must be measured independently.
 
 ## Versions and compatibility
 
-The package release is `0.12.0`. `ENGINE_PROTOCOL_VERSION` is `2`;
+The package release is `0.12.1`. `ENGINE_PROTOCOL_VERSION` is `2`;
 protocol `1` remains accepted only without an explicit `runtime_contract`.
 The fill/runtime identifier remains `koval_runtime_v2`; input identity remains
 `koval_run_identity_v1`. These names do not certify venue realism.
@@ -305,3 +305,23 @@ mocked HTTP only; authenticated testnet acceptance is a separate release gate.
 
 Update this file when: runtime ordering, identity fields or encodings, supported
 evidence, public fixtures, or sandbox wire protocols change.
+
+## 0.12.1 corrections and evidence transport
+
+`koval.engine.execution_evidence.decode_execution_evidence` is the strict MIT
+JSON transport for funding, fee, instrument, mark and proxy dataclasses. Unknown
+nested fields and lossy numeric inputs are rejected. Decimal values round-trip
+as strings. `ExecutionEvidence.realism_report()` distinguishes supplied inputs,
+assumptions and unavailable effects; empirical accuracy remains unmeasured.
+
+Paper carried-entry margin uses the matching price, never the later candle close.
+Protection latency starts at the first actual fill and is not restarted by later
+partial fills. Quote-denominated accounting rejects other collateral currencies.
+The full live runtime validates funding against its execution grid before any
+decision: an intrabar settlement requires finer candles and cannot silently be
+carried into the next bar. Direct broker callers must call
+`validate_execution_grid(interval_ms)` when they select a timeframe.
+
+Historical evidence is bounded. The host must stop at coverage exhaustion or
+implement an archived, replayable update lifecycle; static imports do not observe
+future funding/marks. No 99% realism or maximum 1% error claim is justified.

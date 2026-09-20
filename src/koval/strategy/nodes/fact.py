@@ -10,8 +10,11 @@ from __future__ import annotations
 
 from typing import Any
 
+import numpy as np
+
 from koval.strategy.graph.domains import Domain
 from koval.strategy.graph.entities import MarketEvent
+from koval.strategy.graph.indicators import ema_pair, rsi_pair
 from koval.strategy.graph.node import BarContext, NodeEvaluate, NodeSpec
 from koval.strategy.graph.ports import PortSpec
 from koval.strategy.graph.registry import register_node
@@ -27,7 +30,6 @@ from koval.strategy.helpers.signals.smc import (
     detect_fvg,
     detect_ob,
 )
-from koval.strategy.helpers.signals.technical import ema_cross, rsi_cross
 from koval.strategy.schemas import (
     BearishEngulfingParams,
     BosParams,
@@ -219,7 +221,18 @@ def _ema_cross_factory(p: EmaCrossParams) -> NodeEvaluate:
     def evaluate(ctx, inputs, state):
         if not _has(ctx.closes, p.slow + 1):
             return {"event": None}
-        d = ema_cross(ctx.closes, fast=p.fast, slow=p.slow)
+        prev_fast, curr_fast = ema_pair(ctx, p.fast)
+        prev_slow, curr_slow = ema_pair(ctx, p.slow)
+        if np.isnan(prev_fast) or np.isnan(prev_slow):
+            return {"event": None}
+        prev_above, curr_above = prev_fast > prev_slow, curr_fast > curr_slow
+        d = (
+            "bullish"
+            if not prev_above and curr_above
+            else "bearish"
+            if prev_above and not curr_above
+            else "none"
+        )
         return {"event": None if d == "none" else _event(ctx, "ema_cross", d)}
 
     return evaluate
@@ -229,7 +242,12 @@ def _rsi_cross_factory(p: RsiCrossParams) -> NodeEvaluate:
     def evaluate(ctx, inputs, state):
         if not _has(ctx.closes, p.period + 2):
             return {"event": None}
-        crossed = rsi_cross(ctx.closes, period=p.period, level=p.level, direction=p.direction)
+        previous, current = rsi_pair(ctx, p.period)
+        crossed = (
+            previous < p.level <= current
+            if p.direction == "cross_up"
+            else previous > p.level >= current
+        )
         if not crossed:
             return {"event": None}
         d = "bullish" if p.direction == "cross_up" else "bearish"

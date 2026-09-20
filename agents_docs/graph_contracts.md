@@ -61,3 +61,25 @@ strictly lower than its producer's.
 
 Update this file when: a domain, entity, or port contract changes; validation
 gains or loses a check.
+
+## Optional historical indicator preparation
+
+`build_graph_strategy()` instances expose `prepare_backtest(candles, *,
+history_bars)`. The host calls it once per instance with the actual primary
+`(N, 6)` feed after runtime-boundary trimming, including retained warmup. It must
+then inject chronological float64 windows of that same feed. This optional
+capability does not change `EngineRunSpec` or protocol negotiation.
+
+`graph/indicators.py` owns per-run tables for built-in EMA/RSI/ATR nodes. The
+`BarContext.indicators` field defaults to `None`; a prepared context receives
+only its current timestamp's scalar pairs after timestamp/history-size checks.
+Nodes and state stores still execute sequentially. Other nodes, paper/sandbox
+runtimes, older hosts and invalid feeds use the existing scalar path.
+
+`helpers/rolling_indicators.py` accepts normalized float64 price arrays. It
+vectorizes independent windows, keeping each window's serial operations and
+seed exact. The previous crossover value belongs to the current window, not
+the previous rolling window. Work remains O(bars × history); NumPy removes
+per-element Python execution. Temporary vectors are bounded by a 4,096-window
+tile, and tables occupy O(bars × distinct requested indicators). Tests compare
+exact helper values, causal prefixes, state transitions and dtype normalization.

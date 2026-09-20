@@ -16,6 +16,7 @@ from koval.strategy.graph.ports import PortSpec
 
 if TYPE_CHECKING:
     from koval.engine.account_state import AccountSnapshot
+    from koval.strategy.graph.indicators import IndicatorValues
 
 
 @dataclass
@@ -47,6 +48,7 @@ class BarContext:
     position_direction: str | None = None
     symbol: str = ""
     account: AccountSnapshot | None = None
+    indicators: IndicatorValues | None = None
 
 
 # Cross-bar mutable state for one node. Plain dict so it stays picklable.

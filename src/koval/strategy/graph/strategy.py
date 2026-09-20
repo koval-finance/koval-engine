@@ -9,6 +9,7 @@ from koval.engine.account_state import PlatformAccountState
 from koval.strategy.base.declarative import DeclarativeStrategy
 from koval.strategy.base.trade_setup import TradeSetup
 from koval.strategy.graph.executor import GraphExecutor, StepResult
+from koval.strategy.graph.indicators import PreparedIndicators
 from koval.strategy.graph.node import BarContext
 
 
@@ -31,6 +32,11 @@ def build_graph_strategy(
             self._account = PlatformAccountState()
             self._account_seeded = False
             self._open_order_meta: dict = {}
+            self._indicators: PreparedIndicators | None = None
+
+        def prepare_backtest(self, candles, *, history_bars: int) -> None:
+            """Prepare only pure indicators; graph/account state remains untouched."""
+            self._indicators = PreparedIndicators.build(typed_graph, candles, history_bars)
 
         def _ctx(self) -> BarContext:
             account = self.account_snapshot()
@@ -63,6 +69,9 @@ def build_graph_strategy(
                 position_direction=self.position_direction,
                 symbol=str(self.config.get("symbol", "")),
                 account=account,
+                indicators=None
+                if self._indicators is None or self.closes is None
+                else self._indicators.at(self.timestamp_ms, len(self.closes)),
             )
 
         def _ensure_stepped(self) -> StepResult:

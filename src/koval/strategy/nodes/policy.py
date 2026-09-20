@@ -9,13 +9,13 @@ from typing import Any
 
 from koval.strategy.graph.domains import Domain
 from koval.strategy.graph.entities import MarketEvent, MarketState, PolicyDecision
+from koval.strategy.graph.indicators import atr_allowed, ema_trend
 from koval.strategy.graph.node import BarContext, NodeEvaluate, NodeSpec
 from koval.strategy.graph.ports import PortSpec
 from koval.strategy.graph.registry import register_node
 from koval.strategy.helpers.filters.momentum import macd_filter, rsi_filter, stoch_filter
-from koval.strategy.helpers.filters.trend import adx_filter, ema_trend_filter
+from koval.strategy.helpers.filters.trend import adx_filter
 from koval.strategy.helpers.filters.volatility import (
-    atr_volatility_filter,
     bb_volatility_filter,
 )
 from koval.strategy.helpers.signals.candlesticks import is_doji
@@ -113,10 +113,7 @@ def _register() -> None:
             _CONTEXT_IN,
             _POLICY_OUT,
             _wrap(
-                lambda c, p: (
-                    _has(c.closes, p.period)
-                    and ema_trend_filter(c.closes, period=p.period, direction=p.direction)
-                ),
+                lambda c, p: _has(c.closes, p.period) and ema_trend(c, p.period, p.direction),
                 "wrong_side_of_ema",
             ),
         )
@@ -132,10 +129,7 @@ def _register() -> None:
             _POLICY_OUT,
             _wrap(
                 lambda c, p: (
-                    _has(c.closes, p.period + 1)
-                    and atr_volatility_filter(
-                        c.highs, c.lows, c.closes, period=p.period, min_atr_pct=p.min_atr_pct
-                    )
+                    _has(c.closes, p.period + 1) and atr_allowed(c, p.period, p.min_atr_pct)
                 ),
                 "volatility_too_low",
             ),

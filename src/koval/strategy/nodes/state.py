@@ -9,11 +9,10 @@ from pydantic import Field
 
 from koval.strategy.graph.domains import Domain
 from koval.strategy.graph.entities import MarketEvent, MarketState
+from koval.strategy.graph.indicators import atr_allowed, ema_pair
 from koval.strategy.graph.node import BarContext, NodeEvaluate, NodeSpec
 from koval.strategy.graph.ports import PortSpec
 from koval.strategy.graph.registry import register_node
-from koval.strategy.helpers.filters.trend import ema_trend_filter
-from koval.strategy.helpers.filters.volatility import atr_volatility_filter
 from koval.strategy.schemas import _StrictModel
 
 _CONTEXT_IN = {
@@ -58,9 +57,10 @@ def _trend_bias_factory(p: TrendBiasParams) -> NodeEvaluate:
     def evaluate(ctx, inputs, state):
         if not _has(ctx.closes, p.period):
             return {"state": _state(ctx, "trend_bias", "neutral", state)}
-        if ema_trend_filter(ctx.closes, period=p.period, direction="bullish"):
+        current_ema = ema_pair(ctx, p.period)[1]
+        if ctx.closes[-1] > current_ema:
             status = "bullish"
-        elif ema_trend_filter(ctx.closes, period=p.period, direction="bearish"):
+        elif ctx.closes[-1] < current_ema:
             status = "bearish"
         else:
             status = "neutral"
@@ -77,9 +77,7 @@ def _volatility_regime_factory(p: VolatilityRegimeParams) -> NodeEvaluate:
             and _has(ctx.closes, p.period + 1)
         ):
             return {"state": _state(ctx, "volatility_regime", "normal", state)}
-        expanded = atr_volatility_filter(
-            ctx.highs, ctx.lows, ctx.closes, period=p.period, min_atr_pct=p.min_atr_pct
-        )
+        expanded = atr_allowed(ctx, p.period, p.min_atr_pct)
         status = "expansion" if expanded else "compression"
         return {"state": _state(ctx, "volatility_regime", status, state)}
 

@@ -56,6 +56,7 @@ from koval.engine.broker import (
     BrokerReconciliationReport,
     ProtectiveOrderIntent,
 )
+from koval.engine.execution_evidence import ExecutionEvidence
 from koval.engine.execution_proxy import (
     BarLiquidityBudget,
     ExecutionProxyConfig,
@@ -251,6 +252,8 @@ class PaperBroker:
         }
         if len(self._evidence_symbols) > 1:
             raise ValueError("paper execution evidence symbol mismatch")
+        for evidence_symbol in self._evidence_symbols:
+            self._validate_fee_currency(evidence_symbol)
         if execution_proxy is not None and self._profile.ambiguity_policy is None:
             raise ValueError("partial execution proxy requires paper_ohlcv_realistic_v2")
         if execution_proxy is not None and (
@@ -296,6 +299,10 @@ class PaperBroker:
     def execution_evidence(self) -> dict[str, dict]:
         return {key: dict(value) for key, value in self._execution_evidence.items()}
 
+    def validate_execution_grid(self, interval_ms: int) -> None:
+        if self._funding is not None:
+            self._funding.validate_execution_grid(interval_ms)
+
     def validate_market_context(self, *, exchange: str | None, symbol: str) -> None:
         if exchange is not None:
             venue, _ = assert_supported_market(exchange, self._market)
@@ -307,7 +314,7 @@ class PaperBroker:
 
     def _validate_fee_currency(self, symbol: str) -> None:
         schedule = self._fee_schedule
-        if schedule is None or schedule.currency == "quote" or not symbol:
+        if not symbol:
             return
         canonical = self._canonical_symbol(symbol)
         quote = next(
@@ -328,9 +335,13 @@ class PaperBroker:
             ),
             None,
         )
-        if self._exchange == "whitebit" and canonical.endswith("PERP"):
+        if (
+            self._exchange == "whitebit" or "whitebit" in self._evidence_exchanges
+        ) and canonical.endswith("PERP"):
             quote = "USDT"
-        if schedule.currency != quote:
+        if any(spec.collateral_currency != quote for spec in self._instrument_specs):
+            raise ValueError("paper linear accounting requires quote collateral")
+        if schedule is not None and schedule.currency not in {"quote", quote}:
             raise ValueError("paper fee currency must match the instrument quote currency")
 
     @property
@@ -400,6 +411,14 @@ class PaperBroker:
             if proxy is not None
             else {"status": "unavailable"}
         )
+        if self._profile.ambiguity_policy is not None:
+            metadata["realism_report"] = ExecutionEvidence(
+                funding=self._funding,
+                fee_schedule=self._fee_schedule,
+                instrument_specs=self._instrument_specs,
+                mark_prices=self._mark_prices,
+                execution_proxy=proxy,
+            ).realism_report()
         if proxy is not None:
             metadata["latency_ms"] = vars(proxy.latency).copy()
         return metadata
@@ -475,7 +494,12 @@ class PaperBroker:
         }
 
     def _affordability_error(
-        self, quantity: float, price: float, *, liquidity_role: str = "taker"
+        self,
+        quantity: float,
+        price: float,
+        *,
+        liquidity_role: str = "taker",
+        margin_mark: float | None = None,
     ) -> str | None:
         """Reason string when the fixed profile cannot afford an entry that
         would fill at ``price``, or ``None`` when it can. Used both as a
@@ -489,17 +513,21 @@ class PaperBroker:
             price,
             commission_bps=self._fee_rate(liquidity_role),
         )
-        available = self.equity - self.margin_used
+        available = (
+            self.equity if margin_mark is None else self.balance + self._unrealized(margin_mark)
+        ) - self.margin_used
         if needed + fee > available:
             return f"insufficient_margin: required {needed + fee:.8f}, available {available:.8f}"
         return None
 
     def _reject_unaffordable_entry(
-        self, quantity: float, fill_price: float, *, liquidity_role: str
+        self, quantity: float, fill_price: float, *, liquidity_role: str, margin_mark: float
     ) -> bool:
         """Drop the pending entry and record the reason when it cannot be
         afforded at ``fill_price``. Returns ``True`` when it rejected."""
-        reason = self._affordability_error(quantity, fill_price, liquidity_role=liquidity_role)
+        reason = self._affordability_error(
+            quantity, fill_price, liquidity_role=liquidity_role, margin_mark=margin_mark
+        )
         if reason is None:
             return False
         self._pending = None
@@ -688,6 +716,13 @@ class PaperBroker:
                 metadata=self._fee_metadata(fee_application),
             )
         prior = self._position
+        if o.timeline is not None:
+            activation = (
+                prior.protection_active_timestamp_ms
+                if prior is not None
+                else int(ts_ms) + self._execution_proxy.latency.protection_activation_ms
+            )
+            o.timeline = replace(o.timeline, protection_active_timestamp_ms=activation)
         if prior is None:
             self._position = BrokerPosition(
                 side=o.side,
@@ -1045,7 +1080,7 @@ class PaperBroker:
                         self._entry_rejection = f"instrument_constraint: {exc}"
                         return []
                 if self._reject_unaffordable_entry(
-                    fill_quantity, fill_price, liquidity_role=liquidity_role
+                    fill_quantity, fill_price, liquidity_role=liquidity_role, margin_mark=matched
                 ):
                     return []
             self._allocate_fill_quantity(

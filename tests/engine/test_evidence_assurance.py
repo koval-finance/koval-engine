@@ -133,8 +133,8 @@ def test_whitebit_fees_are_current_snapshot_with_actual_market_identity():
             {
                 "name": "BTC_PERP",
                 "type": "futures",
-                "makerFee": "0.0001",
-                "takerFee": "0.0004",
+                "makerFee": "0.1",
+                "takerFee": "0.04",
                 "money": "USDT",
                 "stock": "BTC",
                 "stockPrec": 3,
@@ -146,7 +146,7 @@ def test_whitebit_fees_are_current_snapshot_with_actual_market_identity():
     assert evidence.evidence_status == "current_snapshot"
     assert evidence.exchange == "whitebit"
     assert evidence.market == "future"
-    assert evidence.maker_bps == 1
+    assert evidence.maker_bps == 10
     assert evidence.taker_bps == 4
     assert evidence.effective_from_ms == evidence.effective_to_ms
     assert evidence.raw_response

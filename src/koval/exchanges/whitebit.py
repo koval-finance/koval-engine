@@ -171,8 +171,8 @@ class WhiteBITAdapter(ExchangeAdapter):
         observed = time.time_ns() // 1_000_000
         return FeeScheduleEvidence(
             evidence_id=content_sha256({"response": raw, "observed_ms": observed}),
-            maker_bps=float(Decimal(str(item["makerFee"])) * 10000),
-            taker_bps=float(Decimal(str(item["takerFee"])) * 10000),
+            maker_bps=float(Decimal(str(item["makerFee"])) * 100),
+            taker_bps=float(Decimal(str(item["takerFee"])) * 100),
             currency=str(item["money"]),
             evidence_status="current_snapshot",
             source="whitebit_v4_public_markets",

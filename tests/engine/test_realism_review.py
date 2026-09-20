@@ -220,3 +220,138 @@ def test_legacy_profile_cannot_silently_ignore_supplied_fees():
         PaperBroker(
             10_000, fee_schedule=FeeScheduleEvidence("fees", 1, 4, "quote", "approximation", "test")
         )
+
+
+@pytest.mark.parametrize("side", ["buy", "sell"])
+def test_partial_opening_entry_margin_does_not_use_later_close(side):
+    from koval.engine.execution_proxy import ExecutionLatency, ExecutionProxyConfig
+
+    outcomes = []
+    for close in (50, 100, 150):
+        broker = PaperBroker(
+            200,
+            profile=resolve_paper_profile(
+                {
+                    "version": "paper_ohlcv_realistic_v2",
+                    "commission_bps": 0,
+                    "spread_bps": 0,
+                    "slippage_bps": 0,
+                }
+            ),
+            execution_proxy=ExecutionProxyConfig(Decimal("0.1"), "carry", ExecutionLatency()),
+        )
+        broker.submit_bracket(
+            side=side,
+            entry_price=100,
+            stop_price=10 if side == "buy" else 300,
+            target_price=300 if side == "buy" else 10,
+            quantity=2,
+            order_type="market",
+            decision_timestamp_ms=0,
+        )
+        broker.process_bar(ts_ms=60_000, open=100, high=101, low=99, close=100, volume=10)
+        fills = broker.process_bar(
+            ts_ms=120_000,
+            open=100,
+            high=151,
+            low=49,
+            close=close,
+            volume=10,
+        )
+        outcomes.append([(fill.kind, fill.price, fill.quantity) for fill in fills])
+    assert outcomes == [[("entry", 100, 1)]] * 3
+
+
+def test_protection_delay_starts_when_delayed_limit_actually_fills():
+    from koval.engine.execution_proxy import ExecutionLatency, ExecutionProxyConfig
+
+    broker = PaperBroker(
+        1000,
+        profile=resolve_paper_profile(
+            {
+                "version": "paper_ohlcv_realistic_v2",
+                "commission_bps": 0,
+                "spread_bps": 0,
+                "slippage_bps": 0,
+            }
+        ),
+        execution_proxy=ExecutionProxyConfig(
+            Decimal("1"),
+            "carry",
+            ExecutionLatency(protection_activation_ms=120_000),
+        ),
+    )
+    broker.submit_bracket(
+        side="buy",
+        entry_price=100,
+        stop_price=90,
+        target_price=120,
+        quantity=1,
+        order_type="limit",
+        decision_timestamp_ms=0,
+    )
+    for timestamp in (0, 60_000):
+        assert (
+            broker.process_bar(
+                ts_ms=timestamp,
+                open=110,
+                high=111,
+                low=109,
+                close=110,
+                volume=10,
+            )
+            == []
+        )
+    fills = broker.process_bar(ts_ms=120_000, open=100, high=105, low=89, close=100, volume=10)
+    assert [fill.kind for fill in fills] == ["entry"]
+    assert fills[0].protection_active_timestamp_ms == 240_000
+    assert broker.process_bar(ts_ms=180_000, open=100, high=105, low=89, close=100, volume=10) == []
+    assert (
+        broker.process_bar(
+            ts_ms=240_000,
+            open=100,
+            high=105,
+            low=89,
+            close=100,
+            volume=10,
+        )[0].kind
+        == "stop_loss"
+    )
+
+
+def test_live_runtime_refuses_funding_inside_execution_candle():
+    from koval.engine.funding import FundingRecord, build_funding_series
+
+    funding = build_funding_series(
+        [
+            FundingRecord("BTCUSDT", Decimal(".01"), t, Decimal("100"), 60_000, "test")
+            for t in (30_000, 90_000)
+        ],
+        exchange="binance",
+        market="future",
+        symbol="BTCUSDT",
+        requested_start_ms=0,
+        requested_end_ms=120_000,
+    )
+    with pytest.raises(ValueError, match="funding.*execution.*grid"):
+        LiveEngine(
+            ema_cross_graph(),
+            LiveEngineConfig(
+                symbol="BTCUSDT",
+                timeframe="1m",
+                initial_capital=1000,
+                exchange="binance",
+                execution=EXECUTION,
+                funding=funding,
+            ),
+        )
+
+
+def test_paper_context_rejects_non_quote_collateral_before_execution():
+    with pytest.raises(ValueError, match="quote collateral"):
+        PaperBroker(
+            10000,
+            profile=resolve_paper_profile(EXECUTION),
+            exchange="binance",
+            instrument_specs=(_spec(collateral_currency="BTC"),),
+        )

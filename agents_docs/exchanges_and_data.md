@@ -71,14 +71,17 @@ An empty short window requires `interval_ms`, `settlement_anchor_ms` and
 `schedule_source` proving there was no scheduled settlement inside it. Duration
 alone cannot establish zero funding. Both venue adapters need at least two
 settlements to infer the interval; short windows need archived schedule evidence.
-WhiteBIT's rate-calculation time is not used as a settlement interval. Repeated
-funding pages or the venue's maximum offset terminate with explicit errors.
+WhiteBIT's rate-calculation time is not used as a settlement interval. Funding
+pages are capped at the venue's documented 100 rows. Repeated pages or the
+venue's maximum offset terminate with explicit errors.
 
 `WhiteBITAdapter.fetch_fee_schedule` returns current public default fees with
 raw response, canonical identity and a point-in-time validity interval. Reusing
 that snapshot at another timestamp is an approximation. It is not an observed
-account rate. Optional identity on `FeeScheduleEvidence` is validated by paper;
-old unbound schedules remain explicit caller assumptions.
+account rate. The venue fields are percentages (`0.1` means 0.1%), so the
+adapter converts them to basis points with a multiplier of 100. Optional
+identity on `FeeScheduleEvidence` is validated by paper; old unbound schedules
+remain explicit caller assumptions.
 
 `BinanceAdapter.fetch_mark_prices` samples historical mark-kline **opens** at
 inclusive aligned timestamps. It never uses the later close/high/low at the

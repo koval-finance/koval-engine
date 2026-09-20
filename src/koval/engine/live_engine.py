@@ -516,6 +516,7 @@ class LiveEngine:
         if not isinstance(self._broker, PaperBroker):
             return
         self._broker.validate_market_context(exchange=config.exchange, symbol=config.symbol)
+        self._broker.validate_execution_grid(timeframe_ms(config.timeframe))
         if self._broker.market != canonical_market(config.market):
             raise ValueError("paper broker market does not match live config")
         if config.execution is not None and self._broker.profile != self._profile:

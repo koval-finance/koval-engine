@@ -69,6 +69,14 @@ class FundingSeries:
     def __post_init__(self) -> None:
         _validate_series(self)
 
+    def validate_execution_grid(self, interval_ms: int) -> None:
+        """OHLCV matching cannot locate exposure at an interior settlement."""
+        if any(record.settlement_timestamp_ms % interval_ms for record in self.records):
+            raise ValueError(
+                "funding settlements must align with the execution candle grid; "
+                "use a finer execution timeframe"
+            )
+
 
 def _decimal(value: object, *, field_name: str, positive: bool = False) -> Decimal:
     try:
