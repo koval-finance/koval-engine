@@ -97,6 +97,24 @@ a zero rate or unconstrained instrument and label it historical. Liquidation is
 currently defined only for a single cross-margin position with quote-currency
 collateral; unsupported margin modes fail before simulation.
 
+`BinanceFuturesEvidenceClient` covers the authenticated current-snapshot gap for
+live paper. It signs only the fixed production-origin GET allowlist for leverage
+brackets and account commission rates; redirects, other origins and every order
+or mutation path are rejected. The normalized instrument evidence includes
+maximum initial leverage per notional tier and retains the raw response without
+credentials. These are current snapshots, never historical rules. The host must
+archive successive versions before it can claim coverage for an older period.
+
+`BinanceAdapter.fetch_aggregate_trades` acquires bounded public USD-M trade
+windows with native aggregate IDs and raw pages; gaps and timestamp regressions
+fail closed. `fetch_order_book_snapshot` acquires only the current REST L2 state
+and never labels it historical. `koval.engine.event_timeline` normalizes archived
+events, while `OrderBookState` accepts a snapshot plus only a bridging and then
+`pu`-contiguous diff-depth sequence. `market_depth_execution` can walk displayed
+depth or advance an explicit queue-ahead scenario. The integrated paper profiles
+remain bar-based until a host supplies complete L2 deltas and adopts the depth
+matcher; a current snapshot never upgrades historical fidelity.
+
 ## Sandbox brokers
 
 - `src/koval/exchanges/binance_sandbox.py` — Binance USD-M Futures

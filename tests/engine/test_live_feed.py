@@ -126,6 +126,36 @@ def test_polling_feed_reports_and_stops_on_continuity_gap():
     assert degraded == ["OHLCV continuity gap for BTCUSDT 1m: expected 120000, received 180000"]
 
 
+def test_polling_feed_backfills_from_resume_cursor_even_after_long_outage():
+    from koval.engine.live_feed import PollingFeed
+
+    candles = _candles(20)
+
+    class RangeAdapter:
+        def __init__(self):
+            self.ranges = []
+
+        def fetch_ohlcv(self, symbol, timeframe, start_ms, end_ms):
+            self.ranges.append((start_ms, end_ms))
+            return candles[(candles[:, 0] >= start_ms) & (candles[:, 0] < end_ms)]
+
+    adapter = RangeAdapter()
+    feed = PollingFeed(
+        adapter,
+        symbol="BTCUSDT",
+        timeframe="1m",
+        clock=lambda: 1_200_000,
+        poll_seconds=0.0,
+        lookback_bars=5,
+        start_after_ms=60_000,
+    )
+
+    first = next(feed.bars(StopSignal()))
+
+    assert adapter.ranges[0] == (120_000, 1_200_000)
+    assert int(first[0]) == 120_000
+
+
 @pytest.mark.parametrize(
     "overrides",
     [

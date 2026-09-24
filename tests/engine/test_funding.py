@@ -60,6 +60,42 @@ def test_funding_cashflow_has_exchange_sign_convention(side, rate, expected):
     ) == Decimal(expected)
 
 
+def test_funding_schedule_must_be_representable_on_execution_grid():
+    series = build_funding_series(
+        [],
+        exchange="binance",
+        market="future",
+        symbol="BTCUSDT",
+        requested_start_ms=1,
+        requested_end_ms=H8 // 2,
+        interval_ms=H8,
+        settlement_anchor_ms=0,
+        schedule_source="binance_usdm_funding_rate_history",
+    )
+
+    series.validate_execution_grid(H8 // 2)
+    with pytest.raises(ValueError, match="finer execution timeframe"):
+        series.validate_execution_grid(3 * H8)
+
+
+def test_funding_schedule_anchor_must_align_with_execution_grid():
+    hour = 60 * 60 * 1000
+    series = build_funding_series(
+        [],
+        exchange="binance",
+        market="future",
+        symbol="BTCUSDT",
+        requested_start_ms=hour + 1,
+        requested_end_ms=2 * hour,
+        interval_ms=H8,
+        settlement_anchor_ms=hour,
+        schedule_source="binance_usdm_funding_rate_history",
+    )
+
+    with pytest.raises(ValueError, match="anchor"):
+        series.validate_execution_grid(4 * hour)
+
+
 def test_requested_bounds_do_not_need_to_equal_settlement_timestamps():
     series = build_funding_series(
         (_record(H8),),

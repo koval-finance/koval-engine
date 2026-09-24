@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 import responses
 
-from koval.exchanges import sandbox_factory
+from koval.exchanges import binance_evidence, sandbox_factory
 from koval.exchanges.binance_sandbox import BinanceSandboxBroker
 from koval.exchanges.sandbox_factory import SandboxBrokerConfig, build_broker
 from koval.exchanges.whitebit_sandbox import SandboxUnavailableError, WhiteBITSandboxBroker
@@ -103,6 +103,18 @@ def test_allowlisted_modes_are_exactly_paper_and_verified_binance_sandbox():
         "paper",
         "binance_sandbox",
     }
+
+
+def test_production_evidence_allowlist_contains_only_read_only_account_gets():
+    assert binance_evidence._SIGNED_GET_PATHS == {  # noqa: SLF001 - safety contract
+        "/fapi/v1/leverageBracket",
+        "/fapi/v1/commissionRate",
+    }
+    assert all(
+        mutation not in path.lower()
+        for path in binance_evidence._SIGNED_GET_PATHS  # noqa: SLF001 - safety contract
+        for mutation in ("order", "positionmargin", "multiassetsmargin")
+    )
 
 
 def test_factory_rejects_whitebit_sandbox_until_a_verified_endpoint_exists():

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+from decimal import Decimal
 
 import numpy as np
 import pytest
@@ -8,6 +9,7 @@ import requests
 import responses
 
 from koval.exchanges.binance import BinanceAdapter
+from koval.exchanges.binance_evidence import BinanceFuturesEvidenceClient
 
 
 def test_testnet_url_selected():
@@ -291,8 +293,274 @@ def test_binance_funding_does_not_invent_an_interval_from_one_record():
         )
 
 
+@responses.activate
+def test_binance_funding_proves_an_empty_short_window_from_prior_settlements():
+    interval = 8 * 60 * 60 * 1000
+    responses.add(
+        responses.GET,
+        "https://fapi.binance.com/fapi/v1/fundingRate",
+        json=[
+            {
+                "symbol": "BTCUSDT",
+                "fundingTime": index * interval,
+                "fundingRate": "0.00010000",
+                "markPrice": "100.5",
+            }
+            for index in (1, 2, 3)
+        ],
+    )
+
+    series = BinanceAdapter(testnet=False, market="future").fetch_funding_history(
+        "BTCUSDT", 3 * interval + 1, 4 * interval - 1
+    )
+
+    assert series.records == ()
+    assert series.interval_ms == interval
+    assert series.settlement_anchor_ms == 3 * interval
+    assert series.schedule_source == "binance_usdm_funding_rate_history"
+    query = responses.calls[0].request.url
+    assert "startTime=1" not in query
+    assert "startTime=86400001" not in query
+
+
 def test_binance_spot_funding_is_explicitly_unavailable():
     from koval.engine.funding import FundingUnavailableError
 
     with pytest.raises(FundingUnavailableError):
         BinanceAdapter(testnet=False, market="spot").fetch_funding_history("BTCUSDT", 0, 1)
+
+
+@responses.activate
+def test_fetch_aggregate_trades_preserves_native_ids_and_raw_pages():
+    start = 1_700_000_000_000
+    responses.add(
+        responses.GET,
+        "https://fapi.binance.com/fapi/v1/aggTrades",
+        json=[
+            {"a": 41, "p": "100.1", "q": "0.2", "T": start, "m": True},
+            {"a": 42, "p": "100.2", "q": "0.3", "T": start + 1, "m": False},
+        ],
+    )
+
+    evidence = BinanceAdapter(testnet=False, market="future").fetch_aggregate_trades(
+        "BTC/USDT", start, start + 1
+    )
+
+    assert [record.aggregate_trade_id for record in evidence.records] == [41, 42]
+    assert evidence.records[0].price == Decimal("100.1")
+    assert evidence.records[0].buyer_is_maker is True
+    assert evidence.coverage_start_ms == start
+    assert evidence.coverage_end_ms == start + 1
+    assert evidence.raw_responses[0][0]["a"] == 41
+
+
+@responses.activate
+def test_fetch_aggregate_trades_rejects_a_native_sequence_gap():
+    start = 1_700_000_000_000
+    responses.add(
+        responses.GET,
+        "https://fapi.binance.com/fapi/v1/aggTrades",
+        json=[
+            {"a": 41, "p": "100.1", "q": "0.2", "T": start, "m": True},
+            {"a": 43, "p": "100.2", "q": "0.3", "T": start + 1, "m": False},
+        ],
+    )
+
+    with pytest.raises(ValueError, match="aggregate-trade sequence gap"):
+        BinanceAdapter(testnet=False, market="future").fetch_aggregate_trades(
+            "BTCUSDT", start, start + 1
+        )
+
+
+@responses.activate
+def test_fetch_order_book_snapshot_preserves_exchange_sequence_and_timestamp():
+    responses.add(
+        responses.GET,
+        "https://fapi.binance.com/fapi/v1/depth",
+        json={
+            "lastUpdateId": 91,
+            "E": 1_700_000_000_010,
+            "T": 1_700_000_000_009,
+            "bids": [["99.9", "2"], ["99.8", "3"]],
+            "asks": [["100.1", "1"], ["100.2", "4"]],
+        },
+    )
+
+    evidence = BinanceAdapter(testnet=False, market="future").fetch_order_book_snapshot(
+        "BTCUSDT", limit=100
+    )
+
+    assert evidence.snapshot.source_sequence == 91
+    assert evidence.snapshot.timestamp_ms == 1_700_000_000_009
+    assert evidence.snapshot.bids[0].price == Decimal("99.9")
+    assert evidence.observed_at_ms == 1_700_000_000_010
+    assert evidence.raw_response["lastUpdateId"] == 91
+
+
+def test_trade_and_depth_evidence_are_futures_only():
+    adapter = BinanceAdapter(testnet=False, market="spot")
+
+    with pytest.raises(ValueError, match="Futures only"):
+        adapter.fetch_aggregate_trades("BTCUSDT", 0, 1)
+    with pytest.raises(ValueError, match="Futures only"):
+        adapter.fetch_order_book_snapshot("BTCUSDT")
+
+
+@responses.activate
+def test_aggregate_trade_rejects_non_boolean_maker_flag():
+    responses.add(
+        responses.GET,
+        "https://fapi.binance.com/fapi/v1/aggTrades",
+        json=[{"a": 41, "p": "100.1", "q": "0.2", "T": 1, "m": "false"}],
+    )
+
+    with pytest.raises(ValueError, match="aggregate-trade record"):
+        BinanceAdapter(testnet=False).fetch_aggregate_trades("BTCUSDT", 0, 1)
+
+
+def _exchange_info():
+    return {
+        "symbols": [
+            {
+                "symbol": "BTCUSDT",
+                "contractType": "PERPETUAL",
+                "status": "TRADING",
+                "marginAsset": "USDT",
+                "liquidationFee": "0.005",
+                "filters": [
+                    {
+                        "filterType": "PRICE_FILTER",
+                        "minPrice": "0.10",
+                        "maxPrice": "1000000",
+                        "tickSize": "0.10",
+                    },
+                    {
+                        "filterType": "LOT_SIZE",
+                        "minQty": "0.001",
+                        "maxQty": "1000",
+                        "stepSize": "0.001",
+                    },
+                    {"filterType": "MIN_NOTIONAL", "notional": "5"},
+                    {
+                        "filterType": "PERCENT_PRICE",
+                        "multiplierDown": "0.85",
+                        "multiplierUp": "1.15",
+                    },
+                ],
+            }
+        ]
+    }
+
+
+def _leverage_brackets():
+    return [
+        {
+            "symbol": "BTCUSDT",
+            "brackets": [
+                {
+                    "bracket": 1,
+                    "initialLeverage": 125,
+                    "notionalCap": "50000",
+                    "notionalFloor": "0",
+                    "maintMarginRatio": "0.004",
+                    "cum": "0",
+                },
+                {
+                    "bracket": 2,
+                    "initialLeverage": 100,
+                    "notionalCap": "250000",
+                    "notionalFloor": "50000",
+                    "maintMarginRatio": "0.005",
+                    "cum": "50",
+                },
+            ],
+        }
+    ]
+
+
+@responses.activate
+def test_read_only_evidence_client_normalizes_instrument_rules_and_margin_tiers():
+    responses.add(
+        responses.GET,
+        "https://fapi.binance.com/fapi/v1/exchangeInfo",
+        json=_exchange_info(),
+    )
+    responses.add(
+        responses.GET,
+        "https://fapi.binance.com/fapi/v1/leverageBracket",
+        json=_leverage_brackets(),
+    )
+    client = BinanceFuturesEvidenceClient(
+        api_key="read-only-key",
+        api_secret="read-only-secret",
+        clock_ms=lambda: 1_700_000_000_000,
+    )
+
+    spec = client.fetch_instrument_spec("BTC/USDT")
+
+    assert spec.exchange == "binance"
+    assert spec.market == "future"
+    assert spec.canonical_symbol == "BTCUSDT"
+    assert spec.effective_from_ms == 1_700_000_000_000
+    assert spec.effective_to_ms is None
+    assert spec.evidence_status == "current_snapshot"
+    assert spec.tick_size == Decimal("0.10")
+    assert spec.step_size == Decimal("0.001")
+    assert spec.minimum_notional == Decimal("5")
+    assert spec.collateral_currency == "USDT"
+    assert spec.liquidation_fee_bps == Decimal("50.000")
+    assert [tier.maintenance_margin_rate for tier in spec.margin_tiers] == [
+        Decimal("0.004"),
+        Decimal("0.005"),
+    ]
+    assert [tier.maximum_leverage for tier in spec.margin_tiers] == [
+        Decimal("125"),
+        Decimal("100"),
+    ]
+    assert spec.margin_tiers[1].maintenance_amount == Decimal("50")
+    assert spec.price_band_low_multiplier == Decimal("0.85")
+    assert spec.price_band_high_multiplier == Decimal("1.15")
+    assert spec.raw_response["exchange_info"]["symbol"] == "BTCUSDT"
+    assert spec.raw_response["leverage_bracket"]["symbol"] == "BTCUSDT"
+    assert len(responses.calls) == 2
+    signed = responses.calls[1].request
+    assert signed.method == "GET"
+    assert "signature=" in signed.url
+    assert signed.headers["X-MBX-APIKEY"] == "read-only-key"
+
+
+@responses.activate
+def test_read_only_evidence_client_normalizes_current_account_commission():
+    responses.add(
+        responses.GET,
+        "https://fapi.binance.com/fapi/v1/commissionRate",
+        json={
+            "symbol": "BTCUSDT",
+            "makerCommissionRate": "0.0002",
+            "takerCommissionRate": "0.0005",
+        },
+    )
+    client = BinanceFuturesEvidenceClient(
+        api_key="read-only-key",
+        api_secret="read-only-secret",
+        clock_ms=lambda: 1_700_000_000_000,
+    )
+
+    fee = client.fetch_fee_schedule("BTCUSDT")
+
+    assert fee.maker_bps == 2.0
+    assert fee.taker_bps == 5.0
+    assert fee.currency == "USDT"
+    assert fee.evidence_status == "current_snapshot"
+    assert fee.effective_from_ms == 1_700_000_000_000
+    assert fee.effective_to_ms == 1_700_000_000_000
+    assert fee.discount_treatment == "account_rate_observed"
+    assert "read-only-key" not in repr(fee.raw_response)
+    assert "read-only-secret" not in repr(fee.raw_response)
+
+
+def test_read_only_evidence_client_rejects_invalid_or_missing_credentials():
+    with pytest.raises(ValueError, match="credentials"):
+        BinanceFuturesEvidenceClient(api_key="", api_secret="secret")
+    with pytest.raises(ValueError, match="credentials"):
+        BinanceFuturesEvidenceClient(api_key="key", api_secret="")

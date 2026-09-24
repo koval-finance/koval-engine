@@ -1,11 +1,13 @@
 """Binance Futures REST adapter (read-only).
 
-This adapter exposes ``fetch_ohlcv`` only. Order placement, balances, and
-positions are the sandbox broker's responsibility, not the data adapter's.
+This adapter exposes public read-only market data only. Order placement,
+balances, and positions are the sandbox broker's responsibility, not the data
+adapter's.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, Final
 
@@ -30,6 +32,10 @@ _KLINES_PATH: Final = "/fapi/v1/klines"
 _SPOT_KLINES_PATH: Final = "/api/v3/klines"
 _MAX_LIMIT: Final = 1500
 _FUNDING_LIMIT: Final = 1000
+_FUNDING_LOOKBACK_MS: Final = 3 * 24 * 60 * 60 * 1000
+_AGGREGATE_TRADE_LIMIT: Final = 1000
+_AGGREGATE_TRADE_MAX_WINDOW_MS: Final = 60 * 60 * 1000
+_DEPTH_LIMITS: Final = frozenset({5, 10, 20, 50, 100, 500, 1000})
 _MARKETS: Final[frozenset[str]] = frozenset({"spot", "future"})
 
 _INTERVAL_MAP: Final[dict[str, str]] = {
@@ -40,6 +46,30 @@ _INTERVAL_MAP: Final[dict[str, str]] = {
     "4h": "4h",
     "1d": "1d",
 }
+
+
+@dataclass(frozen=True)
+class AggregateTradeRecord:
+    aggregate_trade_id: int
+    timestamp_ms: int
+    price: Decimal
+    quantity: Decimal
+    buyer_is_maker: bool
+
+
+@dataclass(frozen=True)
+class AggregateTradeEvidence:
+    records: tuple[AggregateTradeRecord, ...]
+    coverage_start_ms: int
+    coverage_end_ms: int
+    raw_responses: tuple[object, ...]
+
+
+@dataclass(frozen=True)
+class OrderBookSnapshotEvidence:
+    snapshot: Any
+    observed_at_ms: int
+    raw_response: dict[str, object]
 
 
 class BinanceAdapter(ExchangeAdapter):
@@ -184,6 +214,125 @@ class BinanceAdapter(ExchangeAdapter):
             raw_responses=tuple(pages),
         )
 
+    def fetch_aggregate_trades(
+        self,
+        symbol: str,
+        start_ms: int,
+        end_ms: int,
+    ) -> AggregateTradeEvidence:
+        """Return one complete, native-ID-verified aggregate-trade window."""
+        if self._market != "future":
+            raise ValueError("aggregate-trade evidence is Binance Futures only")
+        if start_ms < 0 or end_ms < start_ms:
+            raise ValueError("aggregate-trade bounds must be non-negative and ordered")
+        pages: list[object] = []
+        records: list[AggregateTradeRecord] = []
+        cursor = int(start_ms)
+        while cursor <= end_ms:
+            window_end = min(cursor + _AGGREGATE_TRADE_MAX_WINDOW_MS - 1, int(end_ms))
+            params: dict[str, object] = {
+                "symbol": self._normalize_symbol(symbol),
+                "startTime": cursor,
+                "endTime": window_end,
+                "limit": _AGGREGATE_TRADE_LIMIT,
+            }
+            while True:
+                response = get_with_retries(
+                    self._session,
+                    f"{self.base_url}/fapi/v1/aggTrades",
+                    params=params,
+                    timeout=self._timeout,
+                    max_retries=self._max_retries,
+                    backoff_seconds=self._retry_backoff_seconds,
+                )
+                response.raise_for_status()
+                raw = response.json()
+                if not isinstance(raw, list):
+                    raise ValueError("Binance aggregate-trade response must be a list")
+                pages.append(raw)
+                page = [_aggregate_trade_record(item) for item in raw]
+                records.extend(
+                    record for record in page if int(start_ms) <= record.timestamp_ms <= int(end_ms)
+                )
+                if (
+                    len(raw) < _AGGREGATE_TRADE_LIMIT
+                    or not page
+                    or page[-1].timestamp_ms > window_end
+                ):
+                    break
+                params = {
+                    "symbol": self._normalize_symbol(symbol),
+                    "fromId": page[-1].aggregate_trade_id + 1,
+                    "limit": _AGGREGATE_TRADE_LIMIT,
+                }
+            cursor = window_end + 1
+        selected = tuple(
+            sorted(
+                {record.aggregate_trade_id: record for record in records}.values(),
+                key=lambda record: record.aggregate_trade_id,
+            )
+        )
+        for left, right in zip(selected, selected[1:], strict=False):
+            if right.aggregate_trade_id != left.aggregate_trade_id + 1:
+                raise ValueError("Binance aggregate-trade sequence gap")
+            if right.timestamp_ms < left.timestamp_ms:
+                raise ValueError("Binance aggregate-trade timestamp regression")
+        return AggregateTradeEvidence(
+            records=selected,
+            coverage_start_ms=int(start_ms),
+            coverage_end_ms=int(end_ms),
+            raw_responses=tuple(pages),
+        )
+
+    def fetch_order_book_snapshot(
+        self,
+        symbol: str,
+        *,
+        limit: int = 100,
+    ) -> OrderBookSnapshotEvidence:
+        """Acquire a current L2 snapshot without implying historical coverage."""
+        from koval.engine.market_depth_execution import BookLevel, OrderBookSnapshot
+
+        if self._market != "future":
+            raise ValueError("order-book evidence is Binance Futures only")
+        if isinstance(limit, bool) or limit not in _DEPTH_LIMITS:
+            raise ValueError("unsupported Binance Futures depth limit")
+        response = get_with_retries(
+            self._session,
+            f"{self.base_url}/fapi/v1/depth",
+            params={"symbol": self._normalize_symbol(symbol), "limit": limit},
+            timeout=self._timeout,
+            max_retries=self._max_retries,
+            backoff_seconds=self._retry_backoff_seconds,
+        )
+        response.raise_for_status()
+        raw = response.json()
+        if not isinstance(raw, dict):
+            raise ValueError("Binance order-book response must be an object")
+        try:
+            observed_at_ms = int(raw["E"])
+            timestamp_ms = int(raw.get("T", observed_at_ms))
+            sequence = int(raw["lastUpdateId"])
+            bids = tuple(
+                BookLevel(Decimal(str(row[0])), Decimal(str(row[1]))) for row in raw["bids"]
+            )
+            asks = tuple(
+                BookLevel(Decimal(str(row[0])), Decimal(str(row[1]))) for row in raw["asks"]
+            )
+        except (KeyError, TypeError, ValueError, IndexError) as exc:
+            raise ValueError("invalid Binance order-book snapshot") from exc
+        return OrderBookSnapshotEvidence(
+            snapshot=OrderBookSnapshot(
+                timestamp_ms=timestamp_ms,
+                source="binance_usdm_depth_snapshot",
+                source_sequence=sequence,
+                bids=bids,
+                asks=asks,
+            ),
+            observed_at_ms=observed_at_ms,
+            raw_response=raw,
+        )
+
     def fetch_funding_history(self, symbol: str, start_ms: int, end_ms: int):
         from koval.engine.funding import (
             FundingRecord,
@@ -195,7 +344,7 @@ class BinanceAdapter(ExchangeAdapter):
             raise FundingUnavailableError("Binance spot has no perpetual funding")
         raw_pages: list[object] = []
         rows: list[dict[str, object]] = []
-        cursor = int(start_ms)
+        cursor = max(0, int(start_ms) - _FUNDING_LOOKBACK_MS)
         while cursor <= end_ms:
             response = get_with_retries(
                 self._session,
@@ -225,7 +374,13 @@ class BinanceAdapter(ExchangeAdapter):
         timestamps = sorted(int(item["fundingTime"]) for item in rows)
         if len(timestamps) < 2:
             raise ValueError("Binance funding interval is unavailable from fewer than two records")
-        interval = timestamps[1] - timestamps[0]
+        intervals = {right - left for left, right in zip(timestamps, timestamps[1:], strict=False)}
+        if len(intervals) != 1 or next(iter(intervals)) <= 0:
+            raise ValueError("Binance funding interval changed inside the acquired evidence window")
+        interval = next(iter(intervals))
+        selected = [
+            item for item in rows if int(start_ms) <= int(item["fundingTime"]) <= int(end_ms)
+        ]
         records = [
             FundingRecord(
                 symbol=str(item["symbol"]),
@@ -235,7 +390,7 @@ class BinanceAdapter(ExchangeAdapter):
                 interval_ms=interval,
                 source="binance_usdm_funding_rate",
             )
-            for item in rows
+            for item in sorted(selected, key=lambda value: int(value["fundingTime"]))
         ]
         return build_funding_series(
             records,
@@ -244,6 +399,9 @@ class BinanceAdapter(ExchangeAdapter):
             symbol=symbol,
             requested_start_ms=start_ms,
             requested_end_ms=end_ms,
+            interval_ms=interval,
+            settlement_anchor_ms=timestamps[-1],
+            schedule_source="binance_usdm_funding_rate_history",
             raw_responses=tuple(raw_pages),
         )
 
@@ -299,3 +457,30 @@ class BinanceAdapter(ExchangeAdapter):
             return _INTERVAL_MAP[timeframe]
         except KeyError as exc:
             raise ValueError(f"unknown timeframe: {timeframe!r}") from exc
+
+
+def _aggregate_trade_record(value: object) -> AggregateTradeRecord:
+    if not isinstance(value, dict):
+        raise ValueError("invalid Binance aggregate-trade record")
+    if not isinstance(value.get("m"), bool):
+        raise ValueError("invalid Binance aggregate-trade record")
+    try:
+        record = AggregateTradeRecord(
+            aggregate_trade_id=int(value["a"]),
+            timestamp_ms=int(value["T"]),
+            price=Decimal(str(value["p"])),
+            quantity=Decimal(str(value["q"])),
+            buyer_is_maker=value["m"],
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("invalid Binance aggregate-trade record") from exc
+    if (
+        record.aggregate_trade_id < 0
+        or record.timestamp_ms < 0
+        or not record.price.is_finite()
+        or not record.quantity.is_finite()
+        or record.price <= 0
+        or record.quantity <= 0
+    ):
+        raise ValueError("invalid Binance aggregate-trade record")
+    return record

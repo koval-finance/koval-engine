@@ -71,6 +71,19 @@ class FundingSeries:
 
     def validate_execution_grid(self, interval_ms: int) -> None:
         """OHLCV matching cannot locate exposure at an interior settlement."""
+        schedule_interval = self.interval_ms or (
+            self.records[0].interval_ms if self.records else None
+        )
+        if schedule_interval is None or schedule_interval % interval_ms:
+            raise ValueError(
+                "funding schedule is not representable on the execution candle grid; "
+                "use a finer execution timeframe"
+            )
+        anchor = self.settlement_anchor_ms
+        if anchor is None and self.records:
+            anchor = self.records[0].settlement_timestamp_ms
+        if anchor is None or anchor % interval_ms:
+            raise ValueError("funding settlement anchor must align with the execution candle grid")
         if any(record.settlement_timestamp_ms % interval_ms for record in self.records):
             raise ValueError(
                 "funding settlements must align with the execution candle grid; "

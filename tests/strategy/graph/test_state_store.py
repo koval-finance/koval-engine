@@ -19,3 +19,15 @@ def test_store_pickle_roundtrip():
     store.get("n")["x"] = 42
     restored = pickle.loads(pickle.dumps(store))
     assert restored.get("n")["x"] == 42
+
+
+def test_checkpoint_is_an_independent_copy_and_can_be_restored():
+    store = NodeStateStore()
+    store.get("n")["values"] = [1, 2]
+
+    checkpoint = store.checkpoint()
+    checkpoint["n"]["values"].append(3)
+    assert store.get("n")["values"] == [1, 2]
+
+    store.restore({"n": {"values": [4]}})
+    assert store.checkpoint() == {"n": {"values": [4]}}

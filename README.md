@@ -9,7 +9,13 @@ An open engine for building and validating trading strategies as dataflow graphs
 
 ## Status
 
-Beta. This is the `0.12.x` series and the public API may change before 1.0.
+Beta. This source tree prepares the `0.13.x` series; the public API may change before 1.0.
+
+Version 0.13 adds read-only Binance USD-M rule, fee, mark and funding evidence,
+strict per-bar paper updates, a canonical event timeline, checkpoint restoration
+and independent Futures account and depth-model contracts. These are simulation
+and Testnet capabilities, not a production execution path or a measured fill
+accuracy claim.
 
 Version 0.12 adds protocol 2 with explicit warmup/evaluation boundaries and a
 synchronous runtime journal for auditable host archives. It also strengthens
@@ -72,8 +78,9 @@ Finally, keeping the engine separate from the hosted product keeps the open vers
 Read this before trusting a number it prints.
 
 - **Paper simulation.** `PaperBroker` ships three versioned profiles. `paper_legacy_v1` (the default) preserves the original cost-free behavior. `paper_ohlcv_fixed_v1` preserves execution contract v1, including next-open market entries and one-bar-delayed protection. `paper_ohlcv_realistic_v2` activates protection on the entry bar, records unresolved same-bar ambiguity, resolves it stop-first, and handles favorable limit gaps at the favorable open without violating the limit after costs. A market fill already beyond its bracket is contained at the same market reference rather than an unreachable stop or target. The broker sizes and reconciles from actual fills through an append-only cash ledger.
-- **Optional execution evidence.** A v2 paper run can receive historical funding, fee schedules, instrument constraints, mark prices, and a lagged impact calibration. Supplied evidence is identified on fills and in resolved metadata; missing evidence is reported as `unavailable`, not silently treated as observed zero. Instrument rules can quantize or reject orders, mark prices can trigger maintenance-margin liquidation under the currently supported single-position cross-margin model, and one shared bar-volume budget can produce partial fills with explicit remainder and protection policies.
-- **Auditable runtime inputs.** An optional explicit runtime contract separates warmup from evaluation and fixes initial risk baselines and replay endings. A synchronous host archive callback exports full OHLCV, decisions, executions, cashflows and account snapshots with ordered IDs and integrity hashes. Archive storage and broker restart recovery remain the host's responsibility.
+- **Observed-quote live paper.** An opt-in `observed_quote_execution` mode matches paper entries and protection only against later archived bid/ask observations. Closed OHLCV bars still drive strategy decisions but never paper fills in this mode. It requires a costed profile and 1x leverage; public book snapshots estimate executable prices but do not prove venue fills or capture moves between samples. A stopped session retains any open virtual position rather than inventing a close at an older candle price.
+- **Optional execution evidence.** A v2 paper run can receive historical funding, fee schedules, instrument constraints, mark prices, and a lagged impact calibration. A live host may also journal and apply strict idempotent per-bar mark/funding plus rule/fee updates before each bar. Retry IDs are bound to content hashes, and funding interval/anchor must fit the candle grid so intrabar settlements cannot disappear. Supplied evidence is identified on fills and in resolved metadata; missing evidence is reported as `unavailable`, not silently treated as observed zero. Instrument rules can quantize or reject orders, including the half-open current notional tier's maximum leverage; mark prices can trigger maintenance-margin liquidation under the supported single-position cross model. The independent accounting contract also covers explicitly allocated isolated margin. One shared bar-volume budget can produce partial fills with explicit remainder and protection policies.
+- **Auditable runtime inputs.** An optional explicit runtime contract separates warmup from evaluation and fixes initial risk baselines and replay endings. A synchronous host archive callback exports OHLCV, canonical market events, decisions, executions, cashflows and account snapshots with ordered IDs and integrity hashes. Paper ledger, broker and typed-graph state can be exported as hash-verified checkpoints after completed bars and restored only at the exact verified journal head. Durable storage, feed backfill and single-writer ownership remain the host's responsibility.
 - **Backtest plugins.** Plugins remain separate packages. `EngineRunSpec` can request an execution-contract version and named capabilities; negotiation fails closed when a plugin cannot honor them. Passing the same public fixtures and archived evidence proves that runtimes followed the same declared deterministic rules. It does not prove that an OHLCV simulation reproduced a real exchange's order-book queue or historical account fill.
 
 - **Sandbox execution.** The built-in Binance USD-M Futures testnet broker accepts market, limit and stop entries. Conditional orders use Algo Service by default and fills are read from the triggered child order. Every entry requires a full stop-loss/take-profit bracket, and protection is confirmed immediately after a full fill; a working entry is supervised independently of blocked or retrying market-data requests. Venue commissions are read from `userTrades` and are never converted from another asset. A partial fill triggers containment instead of being adopted as a running strategy position. Signed requests support measured server-time skew; excessive skew and exhausted market-data retries fail with stable reasons.
@@ -89,7 +96,11 @@ Nonzero cancellation/replacement latency and non-unit contract multipliers are
 rejected by the current paper broker. Authenticated testnet acceptance is
 separate from the automated HTTP-mock suite.
 
-Even the richest paper profile is a calibrated OHLCV proxy, not an order-book or queue-position simulator. Latency values are deterministic assumptions, and a bar's volume does not show which liquidity was available at a particular price. Results may overstate or understate actual execution. Treat them as reproducible research evidence, not as a forecast or guarantee of returns.
+The integrated paper profiles remain OHLCV execution paths. The package exposes
+strict aggregate-trade, L2 sequence, depth-walk and queue primitives, but a host
+must collect complete streams and explicitly adopt them before claiming trade/L2
+fidelity. Queue position and hidden liquidity remain approximations. Treat all
+results as reproducible research evidence, not as a forecast or guarantee.
 
 ## Architecture
 

@@ -6,7 +6,7 @@ acceptance must be measured independently.
 
 ## Versions and compatibility
 
-The package release is `0.12.1`. `ENGINE_PROTOCOL_VERSION` is `2`;
+The package candidate is `0.13.0`. `ENGINE_PROTOCOL_VERSION` is `2`;
 protocol `1` remains accepted only without an explicit `runtime_contract`.
 The fill/runtime identifier remains `koval_runtime_v2`; input identity remains
 `koval_run_identity_v1`. These names do not certify venue realism.
@@ -62,20 +62,59 @@ preserves the original entry decision across delayed fills. Paper execution
 cashflows link to their fill IDs; funding stays separately identified. External
 fills retain venue/client IDs; missing venue attribution must not be inferred.
 
-`checkpoint` exposes the last acknowledged sequence/hash, accepted bar and fully
-processed bar. A true `archive_enabled` requires a sink; the default no-sink
-checkpoint does not assert durable storage. `verify_runtime_records` verifies an
-ordered prefix. Compare its result to a separately stored terminal checkpoint to
-detect missing final records. Hashes alone prove neither source authenticity nor
-archive retention. Hosts must use a fresh session ID per independent run and
+`checkpoint` exposes the last acknowledged sequence/hash, accepted bar, fully
+processed bar, typed-graph state and paper-broker snapshot. Broker state includes
+its hash-verified ledger, position, pending order, fills, funding cursor and
+applied live-evidence ID-to-content-hash map. The optional `on_checkpoint` callback runs after each
+completed warmup/evaluation bar. A true `archive_enabled` still requires a sink;
+the default no-sink checkpoint does not assert durable storage.
+
+`verify_runtime_records` verifies an ordered journal prefix. Compare its result
+to a separately stored checkpoint to detect a missing tail. `AccountLedger` and
+`PaperBroker` validate their own snapshot hashes and refuse incompatible market,
+profile or evidence identities. Hashes alone prove neither source authenticity
+nor archive retention. Hosts must use a fresh session ID per independent run and
 provide single-writer ownership, durable storage and checkpoint retention.
 
 An identical reconnect repeat of the last input is recorded and ignored. A
 conflicting repeat, older out-of-order input or gap is disclosed and fails.
-This checkpoint identifies a processing boundary, not a supported broker resume
-snapshot. Paper requires deterministic replay; sandbox requires reconciliation
-and containment before any new decision. No automatic adoption of exposure is
-provided.
+`LiveEngine.restore_checkpoint` restores an identically configured paper engine
+only at the exact verified, completed-bar journal head. It rebuilds candle
+identity/window state from retained records and restores economic state from the
+hash-checked broker, ledger, account and graph snapshots, so prior cashflows are
+not replayed. A host must first replay retained execution-evidence updates into
+the fresh broker, establish exclusive ownership and backfill the feed from the
+durable bar cursor. Sandbox still requires venue reconciliation and containment;
+no automatic adoption of venue exposure is provided.
+
+## Canonical event and depth contracts
+
+`event_timeline.py` defines `koval_canonical_event_timeline_v1`. Each source must
+arrive timestamp-monotonic; a source either supplies sequence numbers for all of
+its events or none. Duplicates, sequence gaps and regressions fail. The published
+kind priority resolves equal timestamps and the ordered record set has a stable
+SHA-256 identity. `LiveEngine.apply_canonical_event_timeline` writes unseen
+events before bar evaluation and checkpoints their ID-to-content-hash map and
+native trade/delta sequence cursors. Reconnect overlap is idempotent only when
+content is identical; the retry hash excludes the batch-local ordinal so an
+identical event may move within a reconnect batch without becoming a false
+conflict. A genuinely changed retry or cross-batch gap fails.
+The integrated matcher is still bar-based; journalling events alone does not
+grant trade/L2 fill fidelity.
+
+`market_depth_execution.py` walks only displayed opposing levels after an
+explicit eligibility timestamp. It reports full, partial, insufficient, IOC/FOK
+and post-only outcomes and enforces reduce-only exposure. `LimitQueueModel`
+consumes an explicit queue-ahead estimate only from archived trades and a
+versioned fraction of cancellations. It never treats a snapshot or candle close
+as proof of a resting-order fill.
+
+`futures_accounting.py` computes Decimal-safe single-position, single-asset cross
+or explicitly allocated isolated snapshots from cashflow categories, an
+applicable risk tier and a fresh mark. Isolated collateral must cover initial
+margin and cannot exceed wallet balance. The liquidation price is labelled
+estimated from the current tier; it is not an exchange-reported threshold.
+Multi-asset and hedge modes are not part of this contract.
 
 Existing paper fill profiles retain their names and matching rules:
 `paper_legacy_v1`, `paper_ohlcv_fixed_v1`, `paper_ohlcv_realistic_v2`.
@@ -108,8 +147,10 @@ fill processing; the complete bar-close equity is available at `on_bar`.
 or `mark_at_last_close` (paper only). On natural feed exhaustion the latter
 cancels unfilled entries, retains protected exposure and marks it at the last
 close, matching the backtest plugin. It does not simulate an exit fee or create
-a closed trade. A stop signal or error still flattens; the terminal run identity
-records the applied policy. This is a completed simulation result, not a durable
+a closed trade. A stop signal or error still flattens OHLCV paper; observed-quote
+paper retains open virtual exposure because the last closed candle cannot
+support a causal flatten fill. The terminal run identity records the applied
+policy. This is a completed simulation result, not a durable
 resume/checkpoint mechanism. Sandbox containment behavior is unchanged.
 
 PaperBroker acknowledges its already-matched protective legs using the
@@ -190,6 +231,16 @@ authoritative; an explicit conflicting engine profile, market, venue, symbol,
 starting capital, or evidence input is rejected before processing begins.
 An omitted engine evidence input does not erase evidence already on the broker.
 
+For live paper, `ExecutionEvidenceUpdate` is the strict per-bar extension of
+that static contract. It carries a unique update ID, exact timestamp, one-bar
+`FundingSeries`, optional current fee/spec versions and an exact mark record.
+`LiveEngine.apply_execution_evidence_update` writes the update to the runtime
+journal before mutating the broker. `PaperBroker` applies each ID at most once,
+settles only observed funding records, and uses the exact live mark for open-
+position liquidation. A missing mark, incomplete funding window or uncovered
+rule/fee version fails closed. Offline replay must reapply journalled updates in
+their original position before each corresponding bar.
+
 `PaperBroker.execution_evidence` and `resolved_metadata["execution_evidence"]`
 contain a manifest with these five keys. Each entry has `status` (`supplied` or
 `unavailable`) and `sha256` (or `None`). `supplied` identifies an input; it does
@@ -197,6 +248,31 @@ not assert historical coverage, calibration quality, or venue equivalence.
 Fee/instrument provenance and effective intervals remain in resolved metadata
 and fill records. The fixed configured fee remains an explicit approximation
 when there is no venue fee schedule.
+
+### Observed-quote paper execution
+
+`observed_quote_execution=True` is an opt-in paper-only contract. Closed bars
+still supply strategy inputs and funding evidence; their OHLC never matches an
+entry or protective order. `LiveEngine.observe_paper_quote` journals a public
+bid/ask observation, its venue event time, local receipt time and source before
+calling `PaperBroker.process_observed_quote`. The broker rejects an observation
+older than the order or protection receipt, a quote older than five seconds,
+crossed prices, and duplicate local observation times. Market buy entries use
+the ask and market sells use the bid, then add configured slippage and fee.
+The observed bid/ask already includes the venue spread, so configured OHLCV
+spread is not charged a second time. Protection is checked at each sampled
+quote; moves between samples and queue position remain unknown. An OHLCV
+participation proxy may remain in frozen run evidence but is not applied
+to book snapshots. Its latency fields must all be zero.
+
+This mode currently requires a costed profile and 1x leverage. Liquidation
+from a live mark-price stream is not modeled between quotes. A delayed funding
+record predating a quote entry does not charge that later position. The broker
+checkpoint retains the quote cursor separately from the closed-bar evidence
+cursor, and journal replay must reapply archived quote observations in order.
+Terminal open paper exposure is retained as virtual open exposure; the final
+equity uses the last observed book side and may be stale. This is not measured
+exchange execution accuracy or a profitable-strategy verdict.
 
 `execution_evidence_manifest` and `content_sha256` are public. Hashing uses
 compact sorted-key UTF-8 JSON, rejects non-finite JSON numbers, converts tuples

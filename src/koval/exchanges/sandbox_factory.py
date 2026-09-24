@@ -35,6 +35,7 @@ class SandboxBrokerConfig:
     instrument_specs: tuple[InstrumentSpecEvidence, ...] = ()
     mark_prices: MarkPriceSeries | None = None
     execution_proxy: ExecutionProxyConfig | None = None
+    observed_quote_execution: bool = False
 
 
 def build_broker(mode: str, config: SandboxBrokerConfig) -> Broker:
@@ -55,6 +56,7 @@ def build_broker(mode: str, config: SandboxBrokerConfig) -> Broker:
             instrument_specs=config.instrument_specs,
             mark_prices=config.mark_prices,
             execution_proxy=config.execution_proxy,
+            observed_quote_execution=config.observed_quote_execution,
         )
     if mode == "binance_sandbox":
         broker = BinanceSandboxBroker(

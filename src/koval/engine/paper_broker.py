@@ -44,7 +44,7 @@ last seen close.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from decimal import Decimal
 
 from koval.engine.account_ledger import AccountLedger, LedgerReconciliation
@@ -56,7 +56,7 @@ from koval.engine.broker import (
     BrokerReconciliationReport,
     ProtectiveOrderIntent,
 )
-from koval.engine.execution_evidence import ExecutionEvidence
+from koval.engine.execution_evidence import ExecutionEvidence, ExecutionEvidenceUpdate
 from koval.engine.execution_proxy import (
     BarLiquidityBudget,
     ExecutionProxyConfig,
@@ -73,10 +73,12 @@ from koval.engine.fee_evidence import (
 from koval.engine.funding import FundingSeries, funding_cashflow
 from koval.engine.instrument_risk import (
     InstrumentSpecEvidence,
+    MarkPriceRecord,
     MarkPriceSeries,
     evaluate_liquidation,
     normalize_order,
     select_instrument_spec,
+    validate_initial_leverage,
 )
 from koval.engine.paper_fills import (
     adjusted_price,
@@ -87,13 +89,15 @@ from koval.engine.paper_fills import (
 )
 from koval.engine.paper_profile import PAPER_LEGACY_VERSION, PaperExecutionProfile
 from koval.engine.protection import validate_protection_update
-from koval.engine.run_identity import execution_evidence_manifest
+from koval.engine.run_identity import content_sha256, execution_evidence_manifest
 from koval.exchanges.execution_compatibility import assert_supported_market
 from koval.exchanges.markets import canonical_market
 
 _MARKET_ORDER_TYPES = frozenset({"market"})
 _LIMIT_ORDER_TYPES = frozenset({"limit", "limit_at_zone"})
 _STOP_ORDER_TYPES = frozenset({"stop", "stop_market"})
+MAX_OBSERVED_QUOTE_AGE_MS = 5_000
+OBSERVED_QUOTE_EXECUTION_MODEL = "observed_public_book_quote_v1"
 
 
 @dataclass(frozen=True)
@@ -187,6 +191,7 @@ class PaperBroker:
         mark_prices: MarkPriceSeries | None = None,
         execution_proxy: ExecutionProxyConfig | None = None,
         exchange: str | None = None,
+        observed_quote_execution: bool = False,
     ) -> None:
         try:
             balance = float(starting_balance)
@@ -200,6 +205,7 @@ class PaperBroker:
         self._pending: _PendingOrder | None = None
         self._last_close = 0.0
         self._last_timestamp_ms = 0
+        self._last_bar_timestamp_ms: int | None = None
         self._fill_events: list[BrokerFill] = []
         self._deferred_exit: tuple[Fill, BrokerPosition, str] | None = None
         self._profile = profile or PaperExecutionProfile(PAPER_LEGACY_VERSION)
@@ -261,19 +267,29 @@ class PaperBroker:
         ):
             raise ValueError("paper cancellation and replacement latency are not supported")
         self._execution_proxy = execution_proxy
-        self._execution_evidence = execution_evidence_manifest(
-            funding=funding,
-            fee_schedule=fee_schedule,
-            instrument_specs=instrument_specs,
-            mark_prices=mark_prices,
-            execution_proxy=execution_proxy,
-        )
+        if observed_quote_execution and not self._profile.is_costed:
+            raise ValueError("observed quote paper execution requires a costed profile")
+        if observed_quote_execution and self._profile.leverage != 1.0:
+            raise ValueError("observed quote paper execution requires 1x leverage")
+        if (
+            observed_quote_execution
+            and execution_proxy is not None
+            and any(vars(execution_proxy.latency).values())
+        ):
+            raise ValueError("observed quote paper execution requires zero proxy latency")
+        self._observed_quote_execution = bool(observed_quote_execution)
+        self._last_observed_quote_ms: int | None = None
+        self._quote_match_active = False
         self._exit_cumulative_quantity = 0.0
         self._last_funding_timestamp_ms: int | None = None
         self._funding_cursor = 0
         self._entry_bar_ts: int | None = None
         self._entry_rejection: str | None = None
         self._ambiguities: list[dict[str, object]] = []
+        self._live_evidence_update_hashes: dict[str, str] = {}
+        self._live_mark_prices: dict[int, MarkPriceRecord] = {}
+        self._live_funding_windows: list[FundingSeries] = []
+        self._live_evidence_enabled = False
 
     @property
     def balance(self) -> float:
@@ -288,6 +304,14 @@ class PaperBroker:
         return self._profile
 
     @property
+    def observed_quote_execution(self) -> bool:
+        return self._observed_quote_execution
+
+    @property
+    def last_observed_quote_ms(self) -> int | None:
+        return self._last_observed_quote_ms
+
+    @property
     def market(self) -> str:
         return self._market
 
@@ -297,11 +321,224 @@ class PaperBroker:
 
     @property
     def execution_evidence(self) -> dict[str, dict]:
-        return {key: dict(value) for key, value in self._execution_evidence.items()}
+        evidence = execution_evidence_manifest(
+            funding=self._funding,
+            fee_schedule=self._fee_schedule,
+            instrument_specs=self._instrument_specs,
+            mark_prices=self._mark_prices,
+            execution_proxy=self._execution_proxy,
+        )
+        if self._live_mark_prices:
+            evidence["mark_prices"] = {
+                "status": "supplied",
+                "sha256": content_sha256(
+                    tuple(self._live_mark_prices[key] for key in sorted(self._live_mark_prices))
+                ),
+            }
+        if self._live_funding_windows:
+            evidence["funding"] = {
+                "status": "supplied",
+                "sha256": content_sha256(tuple(self._live_funding_windows)),
+            }
+        return evidence
 
     def validate_execution_grid(self, interval_ms: int) -> None:
         if self._funding is not None:
             self._funding.validate_execution_grid(interval_ms)
+
+    def checkpoint(self) -> dict:
+        """Return a hash-verified broker snapshot at the current journal boundary.
+
+        The caller must replay archived execution-evidence updates into a fresh
+        broker before restoration. Their content identity is checked here; no
+        missing market or risk evidence is reconstructed from mutable sources.
+        """
+        deferred = None
+        if self._deferred_exit is not None:
+            fill, position, session_id = self._deferred_exit
+            deferred = {
+                "fill": asdict(fill),
+                "position": asdict(position),
+                "session_id": session_id,
+            }
+        value = {
+            "version": "koval_paper_broker_checkpoint_v1",
+            "market": self._market,
+            "exchange": self._exchange,
+            "profile": self._profile.as_config(),
+            "execution_evidence": self.execution_evidence,
+            "ledger": self._ledger.checkpoint(),
+            "journaled_ledger_sequence": self._journaled_ledger_sequence,
+            "position": None if self._position is None else asdict(self._position),
+            "pending": None if self._pending is None else asdict(self._pending),
+            "last_close": self._last_close,
+            "last_timestamp_ms": self._last_timestamp_ms,
+            "fill_events": [asdict(fill) for fill in self._fill_events],
+            "deferred_exit": deferred,
+            "exit_cumulative_quantity": self._exit_cumulative_quantity,
+            "last_funding_timestamp_ms": self._last_funding_timestamp_ms,
+            "funding_cursor": self._funding_cursor,
+            "entry_bar_ts": self._entry_bar_ts,
+            "entry_rejection": self._entry_rejection,
+            "ambiguities": [dict(item) for item in self._ambiguities],
+            "live_evidence_update_hashes": [
+                [update_id, digest]
+                for update_id, digest in sorted(self._live_evidence_update_hashes.items())
+            ],
+            "live_evidence_enabled": self._live_evidence_enabled,
+        }
+        if self._observed_quote_execution:
+            value["observed_quote_execution"] = True
+            value["last_observed_quote_ms"] = self._last_observed_quote_ms
+            value["last_bar_timestamp_ms"] = self._last_bar_timestamp_ms
+        return {**value, "sha256": content_sha256(value)}
+
+    def restore_checkpoint(self, checkpoint: dict) -> None:
+        """Replace mutable paper state from one complete, matching checkpoint."""
+        value = {key: item for key, item in checkpoint.items() if key != "sha256"}
+        if checkpoint.get("sha256") != content_sha256(value):
+            raise ValueError("paper broker checkpoint hash mismatch")
+        if value.get("version") != "koval_paper_broker_checkpoint_v1":
+            raise ValueError("unsupported paper broker checkpoint version")
+        if value.get("market") != self._market or value.get("exchange") != self._exchange:
+            raise ValueError("paper broker checkpoint market identity mismatch")
+        if value.get("profile") != self._profile.as_config():
+            raise ValueError("paper broker checkpoint profile mismatch")
+        if bool(value.get("observed_quote_execution")) != self._observed_quote_execution:
+            raise ValueError("paper broker checkpoint execution mode mismatch")
+        if value.get("execution_evidence") != self.execution_evidence:
+            raise ValueError("paper broker checkpoint execution evidence mismatch")
+
+        pending = value.get("pending")
+        if pending is not None:
+            pending = dict(pending)
+            timeline = pending.get("timeline")
+            if timeline is not None:
+                pending["timeline"] = ExecutionTimeline(**timeline)
+            pending = _PendingOrder(**pending)
+        deferred = value.get("deferred_exit")
+        restored_deferred = None
+        if deferred is not None:
+            restored_deferred = (
+                Fill(**deferred["fill"]),
+                BrokerPosition(**deferred["position"]),
+                deferred["session_id"],
+            )
+
+        self._ledger = AccountLedger.from_checkpoint(value["ledger"])
+        self._journaled_ledger_sequence = int(value["journaled_ledger_sequence"])
+        self._position = (
+            None if value.get("position") is None else BrokerPosition(**value["position"])
+        )
+        self._pending = pending
+        self._last_close = float(value["last_close"])
+        self._last_timestamp_ms = int(value["last_timestamp_ms"])
+        self._fill_events = [BrokerFill(**item) for item in value.get("fill_events", ())]
+        self._deferred_exit = restored_deferred
+        self._exit_cumulative_quantity = float(value["exit_cumulative_quantity"])
+        self._last_funding_timestamp_ms = value.get("last_funding_timestamp_ms")
+        self._funding_cursor = int(value["funding_cursor"])
+        self._entry_bar_ts = value.get("entry_bar_ts")
+        self._entry_rejection = value.get("entry_rejection")
+        self._ambiguities = [dict(item) for item in value.get("ambiguities", ())]
+        self._live_evidence_update_hashes = {
+            str(update_id): str(digest)
+            for update_id, digest in value.get("live_evidence_update_hashes", ())
+        }
+        self._live_evidence_enabled = bool(value.get("live_evidence_enabled"))
+        self._last_observed_quote_ms = value.get("last_observed_quote_ms")
+        self._last_bar_timestamp_ms = value.get("last_bar_timestamp_ms")
+        if self.checkpoint() != checkpoint:
+            raise ValueError("paper broker checkpoint is not canonical")
+
+    def validate_execution_evidence_update(self, update: ExecutionEvidenceUpdate) -> bool:
+        """Validate one pre-bar live update; return False for an applied id."""
+        if not isinstance(update, ExecutionEvidenceUpdate):
+            raise ValueError("paper execution evidence update has an invalid type")
+        digest = content_sha256(update.as_config())
+        previous = self._live_evidence_update_hashes.get(update.update_id)
+        if previous is not None:
+            if previous != digest:
+                raise ValueError("paper execution evidence retry changed content")
+            return False
+        last_evidence_bar = (
+            self._last_bar_timestamp_ms
+            if self._observed_quote_execution
+            else self._last_timestamp_ms
+        )
+        if (
+            last_evidence_bar is not None
+            and last_evidence_bar > 0
+            and update.timestamp_ms <= last_evidence_bar
+        ):
+            raise ValueError("paper execution evidence update is stale")
+        if update.funding is not None:
+            if self._market != "future":
+                raise ValueError("funding update requires a futures paper session")
+            if update.funding.market != self._market:
+                raise ValueError("paper funding update market mismatch")
+            if self._exchange is not None and update.funding.exchange != self._exchange:
+                raise ValueError("paper funding update exchange mismatch")
+            symbol = self._canonical_symbol(update.funding.canonical_symbol)
+            if self._evidence_symbols and symbol not in self._evidence_symbols:
+                raise ValueError("paper funding update symbol mismatch")
+        spec = update.instrument_spec
+        if spec is not None:
+            if spec.market != self._market:
+                raise ValueError("paper instrument update market mismatch")
+            if self._exchange is not None and spec.exchange != self._exchange:
+                raise ValueError("paper instrument update exchange mismatch")
+            if self._evidence_symbols and spec.canonical_symbol not in self._evidence_symbols:
+                raise ValueError("paper instrument update symbol mismatch")
+        fee = update.fee_schedule
+        if fee is not None:
+            if fee.market not in {None, self._market}:
+                raise ValueError("paper fee update market mismatch")
+            if self._exchange is not None and fee.exchange not in {None, self._exchange}:
+                raise ValueError("paper fee update exchange mismatch")
+            if (
+                fee.canonical_symbol is not None
+                and self._evidence_symbols
+                and fee.canonical_symbol not in self._evidence_symbols
+            ):
+                raise ValueError("paper fee update symbol mismatch")
+        mark = update.mark_price
+        if mark is not None:
+            existing = self._live_mark_prices.get(mark.timestamp_ms)
+            if existing is not None and existing != mark:
+                raise ValueError("conflicting paper mark-price update")
+        return True
+
+    def apply_execution_evidence_update(self, update: ExecutionEvidenceUpdate) -> bool:
+        """Apply one validated update before its bar, exactly once by id."""
+        if not self.validate_execution_evidence_update(update):
+            return False
+        if update.instrument_spec is not None:
+            self._apply_instrument_update(update.instrument_spec)
+        if update.fee_schedule is not None:
+            self._fee_schedule = update.fee_schedule
+        if update.mark_price is not None:
+            self._live_mark_prices[update.mark_price.timestamp_ms] = update.mark_price
+        if update.funding is not None:
+            self._live_funding_windows.append(update.funding)
+            for record in update.funding.records:
+                self._apply_funding_record(record)
+        self._live_evidence_enabled = True
+        self._live_evidence_update_hashes[update.update_id] = content_sha256(update.as_config())
+        return True
+
+    def _apply_instrument_update(self, spec: InstrumentSpecEvidence) -> None:
+        if any(item.evidence_id == spec.evidence_id for item in self._instrument_specs):
+            return
+        closed: list[InstrumentSpecEvidence] = []
+        for item in self._instrument_specs:
+            if item.effective_to_ms is None and item.effective_from_ms < spec.effective_from_ms:
+                item = replace(item, effective_to_ms=spec.effective_from_ms - 1)
+            closed.append(item)
+        closed.append(spec)
+        self._instrument_specs = tuple(
+            sorted(closed, key=lambda item: (item.effective_from_ms, item.evidence_id))
+        )
 
     def validate_market_context(self, *, exchange: str | None, symbol: str) -> None:
         if exchange is not None:
@@ -349,7 +586,13 @@ class PaperBroker:
         metadata: dict[str, object] = {
             **self._profile.as_config(),
             "ambiguities": list(self._ambiguities),
-            "funding_status": "historical" if self._funding is not None else "unavailable",
+            "funding_status": (
+                "historical"
+                if self._funding is not None
+                else "live_observed"
+                if self._live_funding_windows
+                else "unavailable"
+            ),
             "execution_evidence": self.execution_evidence,
         }
         if self._profile.is_costed:
@@ -395,7 +638,11 @@ class PaperBroker:
             for spec in self._instrument_specs
         ]
         metadata["mark_price_status"] = (
-            "historical" if self._mark_prices is not None else "unavailable"
+            "historical"
+            if self._mark_prices is not None
+            else "live_observed"
+            if self._live_mark_prices
+            else "unavailable"
         )
         proxy = self._execution_proxy
         metadata["execution_model"] = (
@@ -411,14 +658,27 @@ class PaperBroker:
             if proxy is not None
             else {"status": "unavailable"}
         )
+        if self._observed_quote_execution:
+            metadata["execution_model"] = OBSERVED_QUOTE_EXECUTION_MODEL
+            metadata["partial_fill_policy"] = {
+                "status": "not_applied",
+                "reason": "OHLCV volume cannot prove public book liquidity",
+            }
+            metadata["spread_source"] = "observed_bid_ask"
+            metadata["liquidation_model"] = "unavailable_1x_only"
         if self._profile.ambiguity_policy is not None:
-            metadata["realism_report"] = ExecutionEvidence(
+            report = ExecutionEvidence(
                 funding=self._funding,
                 fee_schedule=self._fee_schedule,
                 instrument_specs=self._instrument_specs,
                 mark_prices=self._mark_prices,
                 execution_proxy=proxy,
             ).realism_report()
+            if self._live_funding_windows:
+                report["effects"]["funding"] = "live_observed_evidence"
+            if self._live_mark_prices and self._instrument_specs:
+                report["effects"]["liquidation"] = "live_sampled_mark_model"
+            metadata["realism_report"] = report
         if proxy is not None:
             metadata["latency_ms"] = vars(proxy.latency).copy()
         return metadata
@@ -703,7 +963,7 @@ class PaperBroker:
                 reference,
                 fill_price,
                 quantity,
-                spread_bps=self._profile.spread_bps,
+                spread_bps=0.0 if self._quote_match_active else self._profile.spread_bps,
                 slippage_bps=effective_slippage_bps,
             )
             margin = required_margin(quantity, fill_price, leverage=self._profile.leverage)
@@ -793,7 +1053,13 @@ class PaperBroker:
             status=status,
             cumulative_quantity=cumulative,
             order_id=o.client_order_id or "paper-entry",
-            execution_model=(slippage.model if slippage is not None else "fixed_ohlcv_proxy"),
+            execution_model=(
+                OBSERVED_QUOTE_EXECUTION_MODEL
+                if self._quote_match_active
+                else slippage.model
+                if slippage is not None
+                else "fixed_ohlcv_proxy"
+            ),
             impact_evidence_id=None if slippage is None else slippage.evidence_id,
             decision_timestamp_ms=(
                 None if o.timeline is None else o.timeline.decision_timestamp_ms
@@ -976,10 +1242,21 @@ class PaperBroker:
         low: float,
         close: float,
         volume: float | None = None,
+        _quote_observation: bool = False,
     ) -> list[Fill]:
+        if self._observed_quote_execution and not _quote_observation:
+            self._last_bar_timestamp_ms = int(ts_ms)
+            self._settle_funding(int(ts_ms))
+            # A closed candle can update the account mark, but cannot execute an
+            # order or rewind a later quote observation.
+            if int(ts_ms) >= self._last_timestamp_ms:
+                self._last_close = float(close)
+                self._last_timestamp_ms = int(ts_ms)
+            return []
         liquidity = self._liquidity_budget(timestamp_ms=int(ts_ms), volume=volume)
-        self._settle_funding(int(ts_ms))
-        liquidation = self._liquidate_if_required(int(ts_ms))
+        if not _quote_observation:
+            self._settle_funding(int(ts_ms))
+        liquidation = None if _quote_observation else self._liquidate_if_required(int(ts_ms))
         if liquidation is not None:
             self._pending = None
             return [liquidation]
@@ -1058,7 +1335,11 @@ class PaperBroker:
                     o,
                     fill_price,
                     liquidity_role=liquidity_role,
-                    adjustment_fraction=self._adjustment_fraction(slippage),
+                    adjustment_fraction=(
+                        self._profile.adjustment_fraction
+                        if self._quote_match_active
+                        else self._adjustment_fraction(slippage)
+                    ),
                 )
                 fill_quantity = min(fill_quantity, o.quantity)
                 if fill_quantity <= 0:
@@ -1132,6 +1413,97 @@ class PaperBroker:
             return [entry_fill]
         return []
 
+    def process_observed_quote(
+        self,
+        *,
+        received_at_ms: int,
+        venue_event_ms: int,
+        bid: float,
+        ask: float,
+        order_received_at_ms: int | None,
+    ) -> list[Fill]:
+        """Match a live paper order against a fresh, post-intent executable side.
+
+        The caller archives the complete public observation before invoking this
+        method. A quote is a sampled price, not a claim that the venue filled an
+        order or that no protective level was crossed between samples.
+        """
+        if not self._observed_quote_execution:
+            raise ValueError("observed quote execution is not enabled")
+        timestamps = (received_at_ms, venue_event_ms)
+        if any(
+            isinstance(value, bool) or not isinstance(value, int) or value < 0
+            for value in timestamps
+        ):
+            raise ValueError("quote timestamps must be non-negative integers")
+        if (
+            self._last_observed_quote_ms is not None
+            and received_at_ms <= self._last_observed_quote_ms
+        ):
+            raise ValueError("duplicate or regressing quote observation")
+        if (
+            venue_event_ms > received_at_ms
+            or received_at_ms - venue_event_ms > MAX_OBSERVED_QUOTE_AGE_MS
+        ):
+            raise ValueError("stale or future quote observation")
+        if not math.isfinite(float(bid)) or not math.isfinite(float(ask)) or bid <= 0 or ask <= bid:
+            raise ValueError("quote must have a positive uncrossed bid and ask")
+        if self._pending is not None and (
+            order_received_at_ms is None
+            or venue_event_ms < order_received_at_ms
+            or received_at_ms < order_received_at_ms
+        ):
+            raise ValueError("quote precedes order receipt")
+        self._last_observed_quote_ms = received_at_ms
+        if self._position is not None:
+            executable = bid if self._position.side == "buy" else ask
+        elif self._pending is not None:
+            executable = ask if self._pending.side == "buy" else bid
+            expected_fill = adjusted_price(
+                executable,
+                side=self._pending.side,
+                fraction=self._profile.slippage_bps / 10_000,
+                limit=(
+                    self._pending.entry_price
+                    if self._pending.order_type in _LIMIT_ORDER_TYPES
+                    else None
+                ),
+            )
+            if (
+                self._entry_fill_protection_breach(
+                    Fill(
+                        kind="entry",
+                        side=self._pending.side,
+                        price=expected_fill,
+                        quantity=self._pending.quantity,
+                        timestamp_ms=received_at_ms,
+                        realized_pnl=0.0,
+                    ),
+                    self._pending,
+                )
+                is not None
+            ):
+                self._pending = None
+                self._entry_rejection = "quote_outside_protection"
+                return []
+        else:
+            return []
+        self._quote_match_active = True
+        try:
+            fills = self.process_bar(
+                ts_ms=received_at_ms,
+                open=executable,
+                high=executable,
+                low=executable,
+                close=executable,
+                _quote_observation=True,
+            )
+            if self._position is not None:
+                self._last_close = bid if self._position.side == "buy" else ask
+            return fills
+        finally:
+            self._quote_match_active = False
+
     @staticmethod
     def _entry_fill_protection_breach(fill: Fill, order: _PendingOrder) -> str | None:
         """Classify a fill already beyond its bracket for immediate market containment."""
@@ -1160,31 +1532,50 @@ class PaperBroker:
             if record.settlement_timestamp_ms > timestamp_ms:
                 break
             self._funding_cursor += 1
-            self._last_funding_timestamp_ms = record.settlement_timestamp_ms
-            position = self._position
-            if position is None:
-                continue
-            amount = funding_cashflow(
-                side=position.side,
-                quantity=Decimal(str(position.quantity)),
-                rate=record.rate,
-                mark_price=record.settlement_mark_price,
-            )
-            self._ledger.record(
-                timestamp_ms=record.settlement_timestamp_ms,
-                kind="funding",
-                amount=float(amount),
-                reference_id=f"funding-{record.settlement_timestamp_ms}",
-                metadata={
-                    "rate": str(record.rate),
-                    "mark_price": str(record.settlement_mark_price),
-                    "source": record.source,
-                },
-            )
+            self._apply_funding_record(record)
+
+    def _apply_funding_record(self, record) -> None:
+        if (
+            self._last_funding_timestamp_ms is not None
+            and record.settlement_timestamp_ms <= self._last_funding_timestamp_ms
+        ):
+            return
+        self._last_funding_timestamp_ms = record.settlement_timestamp_ms
+        position = self._position
+        if position is None:
+            return
+        if (
+            self._observed_quote_execution
+            and record.settlement_timestamp_ms <= position.entry_timestamp_ms
+        ):
+            # A delayed closed bar can report a real funding settlement from
+            # before this position existed. Do not charge the new position.
+            return
+        amount = funding_cashflow(
+            side=position.side,
+            quantity=Decimal(str(position.quantity)),
+            rate=record.rate,
+            mark_price=record.settlement_mark_price,
+        )
+        self._ledger.record(
+            timestamp_ms=record.settlement_timestamp_ms,
+            kind="funding",
+            amount=float(amount),
+            reference_id=f"funding-{record.settlement_timestamp_ms}",
+            metadata={
+                "rate": str(record.rate),
+                "mark_price": str(record.settlement_mark_price),
+                "source": record.source,
+            },
+        )
 
     def _liquidity_budget(
         self, *, timestamp_ms: int, volume: float | None
     ) -> BarLiquidityBudget | None:
+        if self._quote_match_active:
+            # The archived top-of-book supplies the executable price. OHLCV
+            # bar-volume participation is not evidence of displayed depth.
+            return None
         proxy = self._execution_proxy
         if proxy is None:
             return None
@@ -1231,7 +1622,8 @@ class PaperBroker:
         )
 
     def _adjustment_fraction(self, slippage: SlippageResolution) -> float:
-        return (self._profile.spread_bps / 2 + float(slippage.slippage_bps)) / 10_000
+        spread = 0.0 if self._quote_match_active else self._profile.spread_bps / 2
+        return (spread + float(slippage.slippage_bps)) / 10_000
 
     def _normalize_pending_order(
         self,
@@ -1251,6 +1643,11 @@ class PaperBroker:
             quantity=Decimal(str(order.quantity)),
             price=Decimal(str(order.entry_price)),
             reference_price=Decimal(str(reference_price)),
+        )
+        validate_initial_leverage(
+            spec,
+            notional=entry.notional,
+            leverage=Decimal(str(self._profile.leverage)),
         )
         closing_side = "sell" if order.side == "buy" else "buy"
         stop = normalize_order(
@@ -1277,8 +1674,8 @@ class PaperBroker:
             quantity=float(entry.quantity),
         )
 
-    @staticmethod
     def _normalize_fill(
+        self,
         order: _PendingOrder,
         fill_price: float,
         spec: InstrumentSpecEvidence,
@@ -1290,14 +1687,23 @@ class PaperBroker:
             quantity=Decimal(str(order.quantity)),
             price=Decimal(str(fill_price)),
         )
+        validate_initial_leverage(
+            spec,
+            notional=normalized.notional,
+            leverage=Decimal(str(self._profile.leverage)),
+        )
         return replace(order, quantity=float(normalized.quantity)), float(normalized.price)
 
     def _liquidate_if_required(self, timestamp_ms: int) -> Fill | None:
         position = self._position
-        if position is None or self._mark_prices is None:
+        if position is None:
             return None
-        mark = self._mark_prices.at(timestamp_ms)
+        mark = self._live_mark_prices.get(timestamp_ms)
+        if mark is None and self._mark_prices is not None:
+            mark = self._mark_prices.at(timestamp_ms)
         if mark is None:
+            if not self._live_evidence_enabled and self._mark_prices is None:
+                return None
             raise ValueError(f"no mark price evidence for open position at {timestamp_ms}")
         spec = select_instrument_spec(self._instrument_specs, timestamp_ms=timestamp_ms)
         state = evaluate_liquidation(
@@ -1555,7 +1961,7 @@ class PaperBroker:
                 reference,
                 fill_price,
                 quantity,
-                spread_bps=self._profile.spread_bps,
+                spread_bps=0.0 if self._quote_match_active else self._profile.spread_bps,
                 slippage_bps=float(slippage.slippage_bps),
             )
         sign = 1.0 if p.side == "buy" else -1.0
@@ -1621,7 +2027,9 @@ class PaperBroker:
             status=status,
             cumulative_quantity=cumulative,
             order_id=order_id,
-            execution_model=slippage.model,
+            execution_model=(
+                OBSERVED_QUOTE_EXECUTION_MODEL if self._quote_match_active else slippage.model
+            ),
             impact_evidence_id=slippage.evidence_id,
         )
         self._record_close_broker_fill(fill, p)

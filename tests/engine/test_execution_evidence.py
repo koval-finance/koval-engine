@@ -78,3 +78,65 @@ def test_paper_metadata_carries_unmeasured_realism_report():
     )
     assert broker.resolved_metadata["realism_report"]["accuracy"] == "unmeasured"
     assert broker.resolved_metadata["realism_report"]["effects"]["partial_fills"] == "ohlcv_proxy"
+
+
+def test_live_evidence_update_round_trips_strict_bar_timestamped_records():
+    from koval.engine.execution_evidence import decode_execution_evidence_update
+
+    update = decode_execution_evidence_update(
+        {
+            "update_id": "binance:BTCUSDT:60000",
+            "timestamp_ms": 60_000,
+            "mark_price": {
+                "timestamp_ms": 60_000,
+                "price": "99.5",
+                "source": "binance_usdm_mark_price_kline_open",
+            },
+            "funding": {
+                "exchange": "binance",
+                "market": "future",
+                "canonical_symbol": "BTCUSDT",
+                "requested_start_ms": 60_000,
+                "requested_end_ms": 60_000,
+                "coverage_complete": True,
+                "interval_ms": 60_000,
+                "settlement_anchor_ms": 60_000,
+                "schedule_source": "binance_usdm_funding_rate_history",
+                "records": [
+                    {
+                        "symbol": "BTCUSDT",
+                        "rate": "0.0001",
+                        "settlement_timestamp_ms": 60_000,
+                        "settlement_mark_price": "100",
+                        "interval_ms": 60_000,
+                        "source": "binance_usdm_funding_rate",
+                        "rate_calculated_timestamp_ms": None,
+                    }
+                ],
+            },
+        }
+    )
+
+    assert update.mark_price.price == Decimal("99.5")
+    assert update.funding.records[0].rate == Decimal("0.0001")
+    assert decode_execution_evidence_update(update.as_config()) == update
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        {"update_id": "", "timestamp_ms": 0, "mark_price": None},
+        {"update_id": "u", "timestamp_ms": True, "mark_price": None},
+        {"update_id": "u", "timestamp_ms": 0},
+        {
+            "update_id": "u",
+            "timestamp_ms": 60_000,
+            "mark_price": {"timestamp_ms": 0, "price": "1", "source": "x"},
+        },
+    ],
+)
+def test_live_evidence_update_rejects_empty_or_misaligned_records(value):
+    from koval.engine.execution_evidence import decode_execution_evidence_update
+
+    with pytest.raises(ValueError):
+        decode_execution_evidence_update(value)

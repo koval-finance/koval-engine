@@ -27,6 +27,8 @@ from koval.engine.broker import (
 )
 from koval.engine.client_order_id import make_client_order_id
 from koval.engine.engine_events import EngineEvent, EventType
+from koval.engine.event_timeline import CanonicalEvent, CanonicalEventTimeline
+from koval.engine.execution_evidence import ExecutionEvidenceUpdate
 from koval.engine.execution_proxy import ExecutionProxyConfig
 from koval.engine.fee_evidence import FeeScheduleEvidence
 from koval.engine.funding import FundingSeries
@@ -52,6 +54,20 @@ from koval.exchanges.markets import canonical_market
 from koval.strategy.base.trade_setup import TradeSetup
 from koval.strategy.block_assembler import assemble_from_graph
 
+_CANONICAL_EVENT_CONTENT_FIELDS = (
+    "event_id",
+    "kind",
+    "timestamp_ms",
+    "source",
+    "source_sequence",
+    "payload",
+)
+
+
+def _canonical_event_digest(record: dict) -> str:
+    """Hash event identity/content without timeline-local batch placement."""
+    return content_sha256({field: record[field] for field in _CANONICAL_EVENT_CONTENT_FIELDS})
+
 
 @dataclass
 class LiveEngineConfig:
@@ -74,6 +90,7 @@ class LiveEngineConfig:
     exchange: str | None = None
     end_of_data_policy: str = "flatten_at_last_close"
     runtime_contract: dict | None = None
+    observed_quote_execution: bool = False
 
 
 def _noop(_x: object) -> None:
@@ -155,6 +172,26 @@ def _broker_fill_to_paper_fill(fill: BrokerFill) -> Fill | None:
         commission=_venue_commission(fill),
         reference_price=float(fill.price),
     )
+
+
+def _trade_setup_to_dict(setup: TradeSetup | object | None) -> dict | None:
+    """Normalize strategy-compatible setup objects into the public dataclass."""
+    if setup is None:
+        return None
+    normalized = TradeSetup(
+        direction=setup.direction,
+        entry_price=float(setup.entry_price),
+        stop_loss=float(setup.stop_loss),
+        take_profit=getattr(setup, "take_profit", None),
+        size=getattr(setup, "size", None),
+        entry_type=getattr(setup, "entry_type", "limit"),
+        why_entry=list(getattr(setup, "why_entry", ())),
+        indicators_at_entry=dict(getattr(setup, "indicators_at_entry", {})),
+        sl_calc_expr=getattr(setup, "sl_calc_expr", None),
+        tp_calc_expr=getattr(setup, "tp_calc_expr", None),
+        annotations=list(getattr(setup, "annotations", ())),
+    )
+    return asdict(normalized)
 
 
 def _validate_ohlcv_row(
@@ -303,6 +340,14 @@ class _Window:
             for lst in (self.ts, self.o, self.h, self.low, self.c, self.v):
                 del lst[0]
 
+    def rows(self) -> list[list[float]]:
+        return [
+            [float(ts), o, h, low, c, v]
+            for ts, o, h, low, c, v in zip(
+                self.ts, self.o, self.h, self.low, self.c, self.v, strict=True
+            )
+        ]
+
 
 class LiveEngine:
     def __init__(
@@ -322,6 +367,7 @@ class LiveEngine:
         on_audit: Callable[[dict], None] = _noop,
         on_incident: Callable[[dict], None] = _noop,
         on_record: Callable[[dict], None] | None = None,
+        on_checkpoint: Callable[[dict], None] = _noop,
     ) -> None:
         self._boundaries = resolve_runtime_boundaries(config.runtime_contract)
         if self._boundaries is not None:
@@ -346,9 +392,12 @@ class LiveEngine:
         self._terminal_policy: str | None = None
         self._session_id = session_id or uuid.uuid4().hex
         self._journal = RuntimeJournal(self._session_id, on_record)
+        self._on_checkpoint = on_checkpoint
         self._last_input: np.ndarray | None = None
         self._ledger_cursor = 0
         self._cashflow_fill_ids: dict[int, str] = {}
+        self._canonical_event_hashes: dict[str, str] = {}
+        self._canonical_source_sequences: dict[str, int] = {}
         self._decision_id: str | None = None
         self._decision_context: dict | None = None
         self._open_decision_context: dict | None = None
@@ -364,7 +413,12 @@ class LiveEngine:
             mark_prices=config.mark_prices,
             execution_proxy=config.execution_proxy,
             exchange=config.exchange,
+            observed_quote_execution=config.observed_quote_execution,
         )
+        if config.observed_quote_execution and (
+            not isinstance(self._broker, PaperBroker) or not self._broker.observed_quote_execution
+        ):
+            raise ValueError("observed quote execution requires a matching paper broker")
         self._validate_broker_config(config)
         if self._broker.target != "paper" and config.end_of_data_policy != "flatten_at_last_close":
             raise ValueError("mark_at_last_close is available only for paper replay")
@@ -452,6 +506,8 @@ class LiveEngine:
         self._partial_exit_slippage_cost = 0.0
         self._higher_timeframe_available = False
         self._last_entry_client_order_id = ""
+        self._last_order_received_at_ms: int | None = None
+        self._last_protection_received_at_ms: int | None = None
         self._entries_halted = False
         self._broker_entries_halted = False
         self._external_entry_pending = False
@@ -461,8 +517,302 @@ class LiveEngine:
 
     @property
     def checkpoint(self) -> dict:
-        """Last acknowledged archive boundary; never an exposure-resume token."""
-        return self._journal.checkpoint
+        """Last acknowledged journal plus broker and strategy recovery state."""
+        strategy_checkpoint = getattr(self._strategy, "runtime_checkpoint", None)
+        broker_checkpoint = getattr(self._broker, "checkpoint", None)
+        return {
+            **self._journal.checkpoint,
+            "bar_index": self._bar_index,
+            "strategy": (
+                strategy_checkpoint()
+                if strategy_checkpoint is not None
+                else {
+                    "version": "koval_strategy_checkpoint_v1",
+                    "kind": "unsupported_custom_strategy",
+                }
+            ),
+            "broker": (
+                broker_checkpoint()
+                if broker_checkpoint is not None
+                else {
+                    "version": "koval_broker_checkpoint_unavailable_v1",
+                    "target": self._broker.target,
+                }
+            ),
+            "engine_state": self._engine_checkpoint_state(),
+        }
+
+    @property
+    def paper_quote_required(self) -> bool:
+        """Whether a live paper order or position needs the next public quote."""
+        return self._config.observed_quote_execution and (
+            self._broker_pending() or self._broker_position() is not None
+        )
+
+    def _engine_checkpoint_state(self) -> dict:
+        state = {
+            "version": "koval_live_engine_state_v1",
+            "identity": {
+                "session_id": self._session_id,
+                "symbol": self._config.symbol,
+                "timeframe": self._config.timeframe,
+                "market": canonical_market(self._config.market),
+                "exchange": self._config.exchange,
+                "strategy_sha256": self._strategy_sha256,
+            },
+            "account": self._account.checkpoint(),
+            "window": self._window.rows(),
+            "primary_identity": self._primary_identity.as_dict(),
+            "warmup_identity": self._warmup_identity.as_dict(),
+            "bar_index": self._bar_index,
+            "trade_id": self._trade_id,
+            "ledger_cursor": self._ledger_cursor,
+            "cashflow_fill_ids": [
+                [sequence, fill_id] for sequence, fill_id in sorted(self._cashflow_fill_ids.items())
+            ],
+            "canonical_event_ids": sorted(self._canonical_event_hashes),
+            "canonical_event_hashes": [
+                [event_id, digest]
+                for event_id, digest in sorted(self._canonical_event_hashes.items())
+            ],
+            "canonical_source_sequences": dict(sorted(self._canonical_source_sequences.items())),
+            "decision_id": self._decision_id,
+            "decision_context": deepcopy(self._decision_context),
+            "open_decision_context": deepcopy(self._open_decision_context),
+            "pending_decision_context": deepcopy(self._pending_decision_context),
+            "pending_setup": (_trade_setup_to_dict(self._pending_setup)),
+            "open_setup": _trade_setup_to_dict(self._open_setup),
+            "open_entry_ts": self._open_entry_ts,
+            "open_entry_fill": (
+                None if self._open_entry_fill is None else asdict(self._open_entry_fill)
+            ),
+            "partial_exit_realized_pnl": self._partial_exit_realized_pnl,
+            "partial_exit_commission": self._partial_exit_commission,
+            "partial_exit_quantity": self._partial_exit_quantity,
+            "partial_exit_notional": self._partial_exit_notional,
+            "partial_exit_spread_cost": self._partial_exit_spread_cost,
+            "partial_exit_slippage_cost": self._partial_exit_slippage_cost,
+            "higher_timeframe_available": self._higher_timeframe_available,
+            "last_entry_client_order_id": self._last_entry_client_order_id,
+            "entries_halted": self._entries_halted,
+            "broker_entries_halted": self._broker_entries_halted,
+            "external_entry_pending": self._external_entry_pending,
+            "containment_attempted": self._containment_attempted,
+            "containment_in_progress": self._containment_in_progress,
+            "containment_confirmed": self._containment_confirmed,
+            "terminal_policy": self._terminal_policy,
+        }
+        if self._config.observed_quote_execution:
+            state["observed_quote_execution"] = True
+            state["last_order_received_at_ms"] = self._last_order_received_at_ms
+            state["last_protection_received_at_ms"] = self._last_protection_received_at_ms
+        return state
+
+    def restore_checkpoint(self, checkpoint: dict, records) -> None:
+        """Restore one paper session at an exact completed-bar journal boundary.
+
+        The retained journal is replayed only to rebuild candle identities and the
+        bounded strategy window.  Economic effects come from the verified broker,
+        strategy, and account snapshots and are therefore never applied twice.
+        """
+        if not isinstance(self._broker, PaperBroker):
+            raise ValueError("only paper sessions can restore a runtime checkpoint")
+        retained = tuple(deepcopy(list(records)))
+        if checkpoint.get("sequence") != len(retained):
+            raise ValueError("journal head does not equal runtime checkpoint")
+        self._journal.restore(checkpoint, retained)
+        if checkpoint.get("last_accepted_bar_ms") != checkpoint.get("last_processed_bar_ms"):
+            raise ValueError("runtime checkpoint is not a completed-bar boundary")
+
+        state = checkpoint.get("engine_state")
+        if not isinstance(state, dict) or state.get("version") != "koval_live_engine_state_v1":
+            raise ValueError("unsupported live engine checkpoint state")
+        expected_identity = {
+            "session_id": self._session_id,
+            "symbol": self._config.symbol,
+            "timeframe": self._config.timeframe,
+            "market": canonical_market(self._config.market),
+            "exchange": self._config.exchange,
+            "strategy_sha256": self._strategy_sha256,
+        }
+        if state.get("identity") != expected_identity:
+            raise ValueError("live engine checkpoint identity mismatch")
+
+        rebuilt_window = _Window(max_len=self._config.max_window)
+        primary = CandleStreamIdentity(self._config.timeframe)
+        warmup = CandleStreamIdentity(self._config.timeframe)
+        last_input: np.ndarray | None = None
+        for record in retained:
+            if record.get("kind") != "bar_received":
+                continue
+            payload = record.get("payload") or {}
+            row = _validate_ohlcv_row(
+                payload.get("ohlcv"),
+                previous_timestamp_ms=(None if last_input is None else int(last_input[0])),
+                timeframe=self._config.timeframe,
+            )
+            phase = payload.get("phase")
+            if phase == "warmup":
+                warmup.append(row)
+            elif phase == "evaluation":
+                primary.append(row)
+            else:
+                raise ValueError("runtime journal bar phase is invalid")
+            rebuilt_window.append(row)
+            last_input = row.copy()
+
+        if rebuilt_window.rows() != state.get("window"):
+            raise ValueError("live engine checkpoint window does not match journal")
+        if primary.as_dict() != state.get("primary_identity"):
+            raise ValueError("live engine primary identity does not match journal")
+        if warmup.as_dict() != state.get("warmup_identity"):
+            raise ValueError("live engine warmup identity does not match journal")
+        if state.get("bar_index") != sum(
+            1 for record in retained if record.get("kind") == "bar_received"
+        ):
+            raise ValueError("live engine bar index does not match journal")
+
+        broker_restore = getattr(self._broker, "restore_checkpoint", None)
+        strategy_restore = getattr(self._strategy, "restore_runtime_checkpoint", None)
+        if broker_restore is None or strategy_restore is None:
+            raise ValueError("runtime components do not support checkpoint restoration")
+        broker_restore(checkpoint.get("broker") or {})
+        strategy_restore(checkpoint.get("strategy") or {})
+        account = PlatformAccountState.from_checkpoint(
+            state.get("account") or {},
+            ledger=self._broker.ledger,
+        )
+
+        self._account = account
+        bind_account = getattr(self._strategy, "bind_account", None)
+        if bind_account is not None:
+            bind_account(self._account.snapshot)
+        self._window = rebuilt_window
+        self._primary_identity = primary
+        self._warmup_identity = warmup
+        self._last_input = last_input
+        self._bar_index = int(state["bar_index"])
+        self._trade_id = int(state["trade_id"])
+        self._ledger_cursor = int(state["ledger_cursor"])
+        self._cashflow_fill_ids = {
+            int(sequence): str(fill_id) for sequence, fill_id in state.get("cashflow_fill_ids", ())
+        }
+        self._canonical_event_hashes = {
+            str(event_id): str(digest) for event_id, digest in state["canonical_event_hashes"]
+        }
+        if sorted(self._canonical_event_hashes) != state["canonical_event_ids"]:
+            raise ValueError("live engine canonical event checkpoint mismatch")
+        self._canonical_source_sequences = {
+            str(source): int(sequence)
+            for source, sequence in state["canonical_source_sequences"].items()
+        }
+        self._decision_id = state.get("decision_id")
+        self._decision_context = deepcopy(state.get("decision_context"))
+        self._open_decision_context = deepcopy(state.get("open_decision_context"))
+        self._pending_decision_context = deepcopy(state.get("pending_decision_context"))
+        pending_setup = state.get("pending_setup")
+        open_setup = state.get("open_setup")
+        open_entry_fill = state.get("open_entry_fill")
+        self._pending_setup = None if pending_setup is None else TradeSetup(**pending_setup)
+        self._open_setup = None if open_setup is None else TradeSetup(**open_setup)
+        self._open_entry_ts = int(state["open_entry_ts"])
+        self._open_entry_fill = None if open_entry_fill is None else Fill(**open_entry_fill)
+        self._partial_exit_realized_pnl = float(state["partial_exit_realized_pnl"])
+        self._partial_exit_commission = float(state["partial_exit_commission"])
+        self._partial_exit_quantity = float(state["partial_exit_quantity"])
+        self._partial_exit_notional = float(state["partial_exit_notional"])
+        self._partial_exit_spread_cost = float(state["partial_exit_spread_cost"])
+        self._partial_exit_slippage_cost = float(state["partial_exit_slippage_cost"])
+        self._higher_timeframe_available = bool(state["higher_timeframe_available"])
+        self._last_entry_client_order_id = str(state["last_entry_client_order_id"])
+        self._entries_halted = bool(state["entries_halted"])
+        self._broker_entries_halted = bool(state["broker_entries_halted"])
+        self._external_entry_pending = bool(state["external_entry_pending"])
+        self._containment_attempted = bool(state["containment_attempted"])
+        self._containment_in_progress = bool(state["containment_in_progress"])
+        self._containment_confirmed = state.get("containment_confirmed")
+        self._terminal_policy = state.get("terminal_policy")
+        if bool(state.get("observed_quote_execution")) != self._config.observed_quote_execution:
+            raise ValueError("live engine checkpoint paper execution mode mismatch")
+        self._last_order_received_at_ms = state.get("last_order_received_at_ms")
+        self._last_protection_received_at_ms = state.get("last_protection_received_at_ms")
+        if self._engine_checkpoint_state() != state:
+            raise ValueError("live engine checkpoint state is not canonical")
+
+    def apply_execution_evidence_update(self, update: ExecutionEvidenceUpdate) -> bool:
+        """Journal then apply one idempotent paper-evidence update."""
+        if update.funding is not None:
+            update.funding.validate_execution_grid(timeframe_ms(self._config.timeframe))
+        validate = getattr(self._broker, "validate_execution_evidence_update", None)
+        apply = getattr(self._broker, "apply_execution_evidence_update", None)
+        if validate is None or apply is None:
+            raise RuntimeError("broker cannot accept live execution evidence")
+        if not validate(update):
+            return False
+        self._journal.write(
+            "execution_evidence_update",
+            update.timestamp_ms,
+            update.as_config(),
+        )
+        if not apply(update):
+            raise RuntimeError("broker did not apply journaled execution evidence")
+        return True
+
+    def apply_canonical_event_timeline(self, timeline: CanonicalEventTimeline) -> int:
+        """Archive one verified market timeline before strategy evaluation.
+
+        Reconnect overlap is idempotent by event identity. Native trade and
+        book-delta sequences must continue exactly across acquired batches.
+        """
+        records, unseen, next_sequences = self._validated_canonical_timeline(timeline)
+        for event in unseen:
+            self._journal.write(
+                "market_event",
+                event.timestamp_ms,
+                {
+                    **records[event.event_id],
+                    "timeline_version": timeline.version,
+                    "timeline_sha256": timeline.timeline_sha256,
+                },
+            )
+            self._canonical_event_hashes[event.event_id] = _canonical_event_digest(
+                records[event.event_id]
+            )
+        self._canonical_source_sequences = next_sequences
+        return len(unseen)
+
+    def validate_canonical_event_timeline(self, timeline: CanonicalEventTimeline) -> int:
+        """Validate continuity and retry identity without mutating runtime state."""
+        _, unseen, _ = self._validated_canonical_timeline(timeline)
+        return len(unseen)
+
+    def _validated_canonical_timeline(
+        self, timeline: CanonicalEventTimeline
+    ) -> tuple[dict[str, dict], list[CanonicalEvent], dict[str, int]]:
+        if not isinstance(timeline, CanonicalEventTimeline):
+            raise TypeError("canonical market timeline is required")
+        records = {record["event_id"]: record for record in timeline.as_records()}
+        unseen = []
+        for event in timeline.events:
+            digest = _canonical_event_digest(records[event.event_id])
+            previous = self._canonical_event_hashes.get(event.event_id)
+            if previous is not None:
+                if previous != digest:
+                    raise ValueError("canonical market event retry changed content")
+                continue
+            unseen.append(event)
+        next_sequences = dict(self._canonical_source_sequences)
+        for event in unseen:
+            if event.kind not in {"trade", "book_delta"} or event.source_sequence is None:
+                continue
+            previous = next_sequences.get(event.source)
+            if previous is not None and event.source_sequence != previous + 1:
+                raise ValueError(
+                    f"canonical source sequence gap for {event.source}: "
+                    f"expected {previous + 1}, received {event.source_sequence}"
+                )
+            next_sequences[event.source] = event.source_sequence
+        return records, unseen, next_sequences
 
     def _record_callback(self, kind: str, callback: Callable[[dict], None]):
         def deliver(payload: dict) -> None:
@@ -510,6 +860,8 @@ class LiveEngine:
             self._journal.write("cashflow", entry.timestamp_ms, payload)
             self._ledger_cursor = entry.sequence
         ts = self._window.ts[-1] if self._window.ts else 0
+        if self._config.observed_quote_execution:
+            ts = max(ts, self._broker.last_observed_quote_ms or 0)
         self._journal.write("account_snapshot", ts, asdict(self._account.snapshot()))
 
     def _validate_broker_config(self, config: LiveEngineConfig) -> None:
@@ -681,6 +1033,7 @@ class LiveEngine:
         if self._boundaries is not None and ts < self._boundaries.evaluation_start_ms:
             self._warmup_identity.append(row)
             self._journal.write("bar_processed", ts, {"phase": phase})
+            self._on_checkpoint(self.checkpoint)
             return
         self._primary_identity.append(row)
         process_bar = getattr(self._broker, "process_bar", None)
@@ -698,7 +1051,15 @@ class LiveEngine:
             self._on_paper_entry_rejected(rejection)
             entry_rejected = True
         self._poll_broker_fills()
-        self._account.on_bar(equity=self._broker_equity(), timestamp_ms=ts)
+        account_time = (
+            max(
+                ts + timeframe_ms(self._config.timeframe),
+                self._broker.last_observed_quote_ms or 0,
+            )
+            if self._config.observed_quote_execution
+            else ts
+        )
+        self._account.on_bar(equity=self._broker_equity(), timestamp_ms=account_time)
         self._inject_state(ts, o, h, low, c, v)
         self._begin_decision(ts)
         on_bar = getattr(self._strategy, "on_bar", None)
@@ -730,6 +1091,7 @@ class LiveEngine:
         self._emit_bar(ts, o, h, low, c, v)
         self._emit_status()
         self._journal.write("bar_processed", ts, {"phase": phase})
+        self._on_checkpoint(self.checkpoint)
 
     def _update_protection(self) -> None:
         # Snapshot both hooks before touching either leg of a possible OCO pair.
@@ -762,6 +1124,21 @@ class LiveEngine:
             if ack is not None:
                 actual_stop = float(ack.metadata.get("stop_price", actual_stop))
             self._account.on_stop_update(actual_stop)
+        if self._config.observed_quote_execution:
+            self._journal.write(
+                "paper_protection_update",
+                (
+                    self._window.ts[-1] + timeframe_ms(self._config.timeframe)
+                    if self._window.ts
+                    else 0
+                ),
+                {
+                    "stop_price": new_sl,
+                    "target_price": new_tp,
+                    "ack": None if ack is None else _ack_to_dict(ack),
+                },
+            )
+            self._last_protection_received_at_ms = self._journal.last_received_timestamp_ms
         if self._open_setup is not None:
             if new_tp is not None:
                 actual_target = getattr(self._broker_position(), "target_price", new_tp)
@@ -841,6 +1218,8 @@ class LiveEngine:
             },
         )
         self._on_order_intent(_intent_to_dict(intent))
+        if self._config.observed_quote_execution:
+            self._last_order_received_at_ms = self._journal.last_received_timestamp_ms
         self._decision_context["why_entry"] = list(setup.why_entry)
         self._pending_decision_context = deepcopy(self._decision_context)
         self._pending_setup = setup
@@ -913,6 +1292,64 @@ class LiveEngine:
         if fill is not None:
             self._on_open(fill)
             self._poll_broker_fills()
+
+    def observe_paper_quote(
+        self,
+        *,
+        received_at_ms: int,
+        venue_event_ms: int,
+        bid: float,
+        ask: float,
+        source_id: str,
+        raw_response: dict | None = None,
+    ) -> None:
+        """Apply one archived Binance book observation after a live paper intent."""
+        if not self._config.observed_quote_execution:
+            raise ValueError("observed quote execution is not enabled")
+        payload = {
+            "received_at_ms": received_at_ms,
+            "venue_event_ms": venue_event_ms,
+            "bid": bid,
+            "ask": ask,
+            "source_id": source_id,
+            "order_received_at_ms": self._last_order_received_at_ms,
+            "protection_received_at_ms": self._last_protection_received_at_ms,
+        }
+        if raw_response is not None:
+            payload["raw_response"] = deepcopy(raw_response)
+        self.apply_observed_paper_quote(payload)
+
+    def apply_observed_paper_quote(self, payload: dict) -> None:
+        """Replay a retained quote using its original receipt clock."""
+        if not self._config.observed_quote_execution:
+            raise ValueError("observed quote execution is not enabled")
+        if not isinstance(payload.get("source_id"), str) or not payload["source_id"]:
+            raise ValueError("paper quote requires a retained source id")
+        protection_received = payload.get("protection_received_at_ms")
+        if (
+            self._broker_position() is not None
+            and protection_received is not None
+            and payload["venue_event_ms"] < protection_received
+        ):
+            raise ValueError("quote precedes protection placement")
+        self._journal.write("paper_quote_observed", payload["received_at_ms"], payload)
+        fills = self._broker.process_observed_quote(
+            received_at_ms=payload["received_at_ms"],
+            venue_event_ms=payload["venue_event_ms"],
+            bid=payload["bid"],
+            ask=payload["ask"],
+            order_received_at_ms=payload["order_received_at_ms"],
+        )
+        rejection = self._broker.consume_entry_rejection()
+        if rejection is not None:
+            self._on_paper_entry_rejected(rejection)
+        for fill in fills:
+            self._apply_paper_fill(fill)
+        self._poll_broker_fills()
+        self._account.on_bar(equity=self._broker_equity(), timestamp_ms=payload["received_at_ms"])
+        if fills:
+            self._emit_status()
+        self._on_checkpoint(self.checkpoint)
 
     def watch_orders(self) -> None:
         """Poll the broker between bars so a limit or stop entry is protected
@@ -1013,6 +1450,7 @@ class LiveEngine:
                 "size": fill.quantity,
                 "why_entry": list(setup.why_entry) if setup else [],
             },
+            timestamp_ms=fill.timestamp_ms if self._config.observed_quote_execution else None,
         )
 
     def _apply_paper_fill(self, fill: Fill) -> None:
@@ -1279,6 +1717,8 @@ class LiveEngine:
                 "payload": {"acks": [_ack_to_dict(ack) for ack in acks]},
             }
         )
+        if self._config.observed_quote_execution:
+            self._last_protection_received_at_ms = self._journal.last_received_timestamp_ms
 
     def _on_close(self, fill: Fill) -> None:
         record = self._trade_record(self._open_setup, fill)
@@ -1318,6 +1758,7 @@ class LiveEngine:
                 "entry_price": record["entry_price"],
                 "size": record["size"],
             },
+            timestamp_ms=fill.timestamp_ms if self._config.observed_quote_execution else None,
         )
         self._on_trade(record)
 
@@ -1389,9 +1830,18 @@ class LiveEngine:
         }
 
     def _finalize(self, *, require_confirmation: bool = True, end_of_data: bool = False) -> None:
-        retain = end_of_data and self._config.end_of_data_policy == "mark_at_last_close"
-        self._terminal_policy = "mark_at_last_close" if retain else "flatten_at_last_close"
         position = self._broker_position()
+        retain_observed = self._config.observed_quote_execution and position is not None
+        retain = retain_observed or (
+            end_of_data and self._config.end_of_data_policy == "mark_at_last_close"
+        )
+        self._terminal_policy = (
+            "retain_observed_paper_position"
+            if retain_observed
+            else "mark_at_last_close"
+            if retain
+            else "flatten_at_last_close"
+        )
         if self._broker.target != "paper":
             if (
                 self._broker_pending()
@@ -1561,8 +2011,16 @@ class LiveEngine:
         s.position_size = float(pos.quantity) if pos else 0.0
         s.position_direction = None if pos is None else ("long" if pos.side == "buy" else "short")
 
-    def _emit(self, event_type: EventType, payload: dict) -> None:
-        ts = self._window.ts[-1] if self._window.ts else 0
+    def _emit(
+        self, event_type: EventType, payload: dict, *, timestamp_ms: int | None = None
+    ) -> None:
+        ts = (
+            timestamp_ms
+            if timestamp_ms is not None
+            else self._window.ts[-1]
+            if self._window.ts
+            else 0
+        )
         ev = EngineEvent(
             event_type=event_type,
             bar_index=self._bar_index,
@@ -1638,6 +2096,7 @@ class LiveEngine:
                 },
                 "containment_attempted": self._containment_attempted,
                 "containment_confirmed": self._containment_confirmed,
+                "terminal_policy": self._terminal_policy if terminal else None,
                 "terminal": terminal,
             }
         )

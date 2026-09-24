@@ -4,6 +4,7 @@ drives. One executor per strategy instance (parallel-run safe)."""
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import asdict
 
 from koval.engine.account_state import PlatformAccountState
 from koval.strategy.base.declarative import DeclarativeStrategy
@@ -170,5 +171,33 @@ def build_graph_strategy(
             entries-halted flag."""
             r = self._result
             return bool(r is not None and r.intents and not r.orders)
+
+        def runtime_checkpoint(self) -> dict:
+            """Return graph/node state after a fully processed runtime bar."""
+            return {
+                "version": "koval_strategy_checkpoint_v1",
+                "kind": "typed_graph",
+                "node_states": self._executor.state.checkpoint(),
+                "stepped_bar": self._stepped_bar,
+                "open_trade_setup": (
+                    None if self._open_trade_setup is None else asdict(self._open_trade_setup)
+                ),
+                "open_current_stop": self._open_current_stop,
+                "open_order_meta": dict(self._open_order_meta),
+            }
+
+        def restore_runtime_checkpoint(self, checkpoint: dict) -> None:
+            """Restore graph state after its journal and broker were verified."""
+            if checkpoint.get("version") != "koval_strategy_checkpoint_v1":
+                raise ValueError("unsupported strategy checkpoint version")
+            if checkpoint.get("kind") != "typed_graph":
+                raise ValueError("strategy checkpoint kind mismatch")
+            self._executor.state.restore(checkpoint.get("node_states") or {})
+            self._stepped_bar = int(checkpoint["stepped_bar"])
+            setup = checkpoint.get("open_trade_setup")
+            self._open_trade_setup = None if setup is None else TradeSetup(**setup)
+            self._open_current_stop = float(checkpoint["open_current_stop"])
+            self._open_order_meta = dict(checkpoint.get("open_order_meta") or {})
+            self._result = None
 
     return _GraphStrategy
