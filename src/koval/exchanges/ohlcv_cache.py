@@ -77,12 +77,14 @@ class OhlcvCache:
     ) -> np.ndarray:
         """Return candles for ``[start_ms, end_ms)``, populating the cache.
 
-        Invariant: the on-disk Parquet file is **append-only, contiguous, and
-        closed-bars-only**. The currently-forming bar (the slot whose open is
+        Invariant: the on-disk Parquet file is **append-only and
+        closed-bars-only**; it may keep holes the venue itself never filled. A
+        hole intersecting the requested range is re-fetched and, if still
+        missing, raises ``OhlcvContinuityError`` without rewriting the file.
+        The currently-forming bar (the slot whose open is
         ``(now_ms // step) * step``) is always re-fetched on every request that
         includes it and is never persisted. Closed-side gaps extending past the
-        cached envelope are filled up to the cache boundary so no internal hole
-        can form.
+        cached envelope are filled up to the cache boundary.
 
         Concurrency: the entire read-modify-write cycle is guarded by a
         per-file advisory lock (``portalocker``) so concurrent callers from
@@ -191,7 +193,12 @@ class OhlcvCache:
         else:
             cached_min = int(cached[0, 0])
             cached_max_excl = int(cached[-1, 0]) + step
-            gaps.extend(self._internal_gaps(cached, step))
+            # Holes left by the venue stay on disk; retry only those the caller needs.
+            gaps.extend(
+                gap
+                for gap in self._internal_gaps(cached, step)
+                if gap[0] < closed_end and gap[1] > start_ms
+            )
             if start_ms < cached_min:
                 gaps.append((start_ms, cached_min))
             if closed_end > cached_max_excl:
@@ -211,9 +218,13 @@ class OhlcvCache:
         if chunks:
             merged_closed = self._sort_dedupe(np.vstack(chunks))
             merged_closed = merged_closed[merged_closed[:, 0] < forming_open]
-            unresolved_gaps = self._internal_gaps(merged_closed, step)
-            if unresolved_gaps:
-                raise OhlcvContinuityError(f"unresolved OHLCV continuity gap: {unresolved_gaps[0]}")
+            requested_gaps = [
+                gap
+                for gap in self._internal_gaps(merged_closed, step)
+                if gap[0] < closed_end and gap[1] > start_ms
+            ]
+            if requested_gaps:
+                raise OhlcvContinuityError(f"unresolved OHLCV continuity gap: {requested_gaps[0]}")
             if dirty:
                 self._write(path, merged_closed)
         else:

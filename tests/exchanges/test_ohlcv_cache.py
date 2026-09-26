@@ -557,3 +557,78 @@ def test_adapter_identity_mismatch_fails(cache, fake_adapter_factory):
             start_ms=0,
             end_ms=60_000,
         )
+
+
+def _candles_with_hole(start_ms: int, n: int, hole_index: int, step: int = 60_000):
+    return [c for i, c in enumerate(_candles(start_ms, n, step)) if i != hole_index]
+
+
+def test_venue_hole_between_cache_and_request_does_not_block_later_ranges(
+    cache, fake_adapter_factory, tmp_path
+):
+    start_ms = 1_700_000_000_000
+    adapter = fake_adapter_factory(_candles_with_hole(start_ms, 30, hole_index=12))
+    cache.get(
+        adapter,
+        exchange="fake",
+        symbol="BTC/USDT",
+        timeframe="1m",
+        start_ms=start_ms,
+        end_ms=start_ms + 10 * 60_000,
+    )
+
+    out = cache.get(
+        adapter,
+        exchange="fake",
+        symbol="BTC/USDT",
+        timeframe="1m",
+        start_ms=start_ms + 20 * 60_000,
+        end_ms=start_ms + 30 * 60_000,
+    )
+
+    assert out.shape == (10, len(OHLCV_COLUMNS))
+    assert out[0, 0] == start_ms + 20 * 60_000
+    stored = pd.read_parquet(tmp_path / "fake" / "future" / "BTCUSDT_1m.parquet")
+    assert start_ms + 12 * 60_000 not in set(stored["timestamp_ms"].to_numpy())
+    assert len(stored) == 29
+
+
+def test_venue_hole_inside_request_still_fails_closed(cache, fake_adapter_factory):
+    start_ms = 1_700_000_000_000
+    adapter = fake_adapter_factory(_candles_with_hole(start_ms, 30, hole_index=12))
+
+    with pytest.raises(OhlcvContinuityError, match="unresolved OHLCV continuity gap"):
+        cache.get(
+            adapter,
+            exchange="fake",
+            symbol="BTC/USDT",
+            timeframe="1m",
+            start_ms=start_ms + 5 * 60_000,
+            end_ms=start_ms + 20 * 60_000,
+        )
+
+
+def test_known_hole_outside_request_is_not_refetched(cache, fake_adapter_factory):
+    start_ms = 1_700_000_000_000
+    adapter = fake_adapter_factory(_candles_with_hole(start_ms, 30, hole_index=12))
+    for offset in (0, 20):
+        cache.get(
+            adapter,
+            exchange="fake",
+            symbol="BTC/USDT",
+            timeframe="1m",
+            start_ms=start_ms + offset * 60_000,
+            end_ms=start_ms + (offset + 10) * 60_000,
+        )
+    adapter.calls.clear()
+
+    cache.get(
+        adapter,
+        exchange="fake",
+        symbol="BTC/USDT",
+        timeframe="1m",
+        start_ms=start_ms + 20 * 60_000,
+        end_ms=start_ms + 30 * 60_000,
+    )
+
+    assert adapter.calls == []

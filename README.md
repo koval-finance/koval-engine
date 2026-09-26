@@ -19,6 +19,8 @@ The 0.12.1 patch adds an optional backtest preparation hook that computes exact
 finite-window EMA/RSI/ATR values for built-in graph nodes in batch. It also
 hardens evidence decoding, fill causality, funding-grid validation and WhiteBIT
 fee conversion without changing the engine protocol or fill profiles.
+The 0.12.2 patch stops a venue hole outside the requested range from failing
+later OHLCV cache reads; holes inside the range still fail closed.
 See the [runtime and plugin migration contract](https://github.com/koval-finance/koval-engine/blob/main/agents_docs/runtime_contract.md)
 and the [execution realism review](https://github.com/koval-finance/koval-engine/blob/main/agents_docs/realism_review.md).
 
