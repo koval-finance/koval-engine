@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 import math
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from typing import Literal
-
-from koval.engine.run_identity import content_sha256
 
 LedgerKind = Literal["commission", "funding", "trade_pnl", "liquidation_fee", "adjustment"]
 
@@ -98,39 +96,6 @@ class AccountLedger:
         )
         self._entries.append(entry)
         return entry
-
-    def checkpoint(self) -> dict:
-        """Return an immutable-content identity for restart-safe restoration."""
-        value = {
-            "version": "koval_account_ledger_checkpoint_v1",
-            "starting_balance": self._starting_balance,
-            "entries": [asdict(entry) for entry in self._entries],
-        }
-        return {**value, "sha256": content_sha256(value)}
-
-    @classmethod
-    def from_checkpoint(cls, checkpoint: dict) -> AccountLedger:
-        """Restore only a complete, untampered ledger prefix."""
-        value = {key: item for key, item in checkpoint.items() if key != "sha256"}
-        if checkpoint.get("sha256") != content_sha256(value):
-            raise ValueError("ledger checkpoint hash mismatch")
-        if value.get("version") != "koval_account_ledger_checkpoint_v1":
-            raise ValueError("unsupported ledger checkpoint version")
-        ledger = cls(value["starting_balance"])
-        for expected, item in enumerate(value.get("entries", ()), 1):
-            if item.get("sequence") != expected:
-                raise ValueError("ledger checkpoint sequence is not contiguous")
-            recorded = ledger.record(
-                timestamp_ms=item["timestamp_ms"],
-                kind=item["kind"],
-                amount=item["amount"],
-                reference_id=item.get("reference_id", ""),
-                currency=item.get("currency", "quote"),
-                metadata=item.get("metadata") or {},
-            )
-            if asdict(recorded) != item:
-                raise ValueError("ledger checkpoint entry is not canonical")
-        return ledger
 
     def reconcile(
         self, *, unrealized_pnl: float, equity: float, margin_used: float

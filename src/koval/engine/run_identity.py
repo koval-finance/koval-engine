@@ -22,8 +22,7 @@ def _json_value(value):
         return {
             field.name: _json_value(getattr(value, field.name))
             for field in fields(value)
-            if not field.name.startswith("_")
-            and field.name not in {"raw_response", "raw_responses"}
+            if not field.name.startswith("_") and field.name != "raw_responses"
         }
     if isinstance(value, Decimal):
         return str(value)

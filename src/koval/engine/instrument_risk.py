@@ -25,7 +25,6 @@ class MaintenanceMarginTier:
     notional_cap: Decimal | None
     maintenance_margin_rate: Decimal
     maintenance_amount: Decimal = Decimal("0")
-    maximum_leverage: Decimal | None = None
 
     def __post_init__(self) -> None:
         floor = Decimal(str(self.notional_floor))
@@ -41,8 +40,6 @@ class MaintenanceMarginTier:
             raise ValueError("maintenance margin rate must be in [0, 1)")
         if not amount.is_finite() or amount < 0:
             raise ValueError("maintenance amount must be non-negative")
-        if self.maximum_leverage is not None:
-            _positive_decimal(self.maximum_leverage, name="maximum initial leverage")
 
 
 @dataclass(frozen=True)
@@ -68,7 +65,6 @@ class InstrumentSpecEvidence:
     price_band_low_multiplier: Decimal | None = None
     price_band_high_multiplier: Decimal | None = None
     margin_mode: str = "cross"
-    raw_response: object | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -334,7 +330,7 @@ def evaluate_liquidation(
             candidate
             for candidate in spec.margin_tiers
             if notional >= Decimal(str(candidate.notional_floor))
-            and (candidate.notional_cap is None or notional < Decimal(str(candidate.notional_cap)))
+            and (candidate.notional_cap is None or notional <= Decimal(str(candidate.notional_cap)))
         ),
         None,
     )
@@ -359,31 +355,6 @@ def evaluate_liquidation(
     )
 
 
-def validate_initial_leverage(
-    spec: InstrumentSpecEvidence,
-    *,
-    notional: Decimal,
-    leverage: Decimal,
-) -> None:
-    """Reject leverage above the venue cap for the matching notional tier."""
-    value = _positive_decimal(notional, name="position notional")
-    selected = _positive_decimal(leverage, name="initial leverage")
-    tier = next(
-        (
-            candidate
-            for candidate in spec.margin_tiers
-            if value >= Decimal(str(candidate.notional_floor))
-            and (candidate.notional_cap is None or value < Decimal(str(candidate.notional_cap)))
-        ),
-        None,
-    )
-    if tier is None:
-        raise ValueError("no maintenance-margin tier covers position notional")
-    maximum = tier.maximum_leverage
-    if maximum is not None and selected > Decimal(str(maximum)):
-        raise ValueError(f"position notional permits maximum leverage {Decimal(str(maximum))}")
-
-
 __all__ = [
     "InstrumentSpecEvidence",
     "LiquidationState",
@@ -395,5 +366,4 @@ __all__ = [
     "evaluate_liquidation",
     "normalize_order",
     "select_instrument_spec",
-    "validate_initial_leverage",
 ]

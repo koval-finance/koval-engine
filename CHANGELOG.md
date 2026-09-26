@@ -6,46 +6,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
-## [0.13.0] - 2026-09-23
-
-### Added
-
-- Read-only Binance USD-M instrument, leverage-bracket and account-fee evidence
-  acquisition with fixed signed-GET allowlists and retained raw responses.
-- Strict idempotent live execution-evidence updates. `LiveEngine` journals each
-  per-bar mark/funding/rule update before `PaperBroker` applies it.
-- A content-addressed canonical event timeline with published equal-timestamp
-  priorities and strict duplicate, order and source-sequence validation.
-- Read-only Binance USD-M aggregate-trade windows and current L2 snapshots with
-  retained raw responses. Live canonical market events are journaled exactly
-  once across reconnect overlap; native trade sequence gaps fail closed.
-- Standalone displayed-depth execution and versioned limit queue-ahead models
-  with explicit partial, insufficient-liquidity, IOC/FOK, post-only and
-  reduce-only outcomes.
-- Decimal-safe single-position, single-asset cross and explicitly allocated
-  isolated Futures account snapshots with separate PnL, fee, funding and
-  liquidation-fee movements.
-- Hash-verified account-ledger and paper-broker checkpoints plus typed-graph
-  state snapshots. `LiveEngine` exposes one combined checkpoint after each
-  completed bar through an optional host callback.
-- Exact paper `LiveEngine` restoration at a verified completed-bar journal
-  boundary, including strategy, broker, account, market-event cursors and
-  economic state. The host still owns durable storage and feed backfill.
-
-### Changed
-
-- Paper entries validate configured leverage against the applicable notional
-  tier using half-open capped ranges. Dynamic live marks drive liquidation and
-  observed funding windows settle once; a funding schedule interval/anchor that
-  cannot fit the execution grid fails closed.
-
-### Fixed
-
-- Bind execution-evidence and canonical-event retry IDs to content hashes before
-  and after checkpoint restore; a reused ID with changed content is rejected,
-  while an identical event rebatched at another timeline ordinal remains idempotent.
-- Select the next maintenance/leverage tier exactly at a shared notional boundary.
-
 ## [0.12.1] - 2026-09-20
 
 ### Execution correctness
@@ -380,8 +340,7 @@ First public release.
 - The MIT/GPL boundary is enforced by a test rather than by convention: no file in this package may import Backtrader.
 - Releases are published to PyPI through Trusted Publishing (OIDC) with PEP 740 attestations. No long-lived PyPI credential is used in CI.
 
-[Unreleased]: https://github.com/koval-finance/koval-engine/compare/v0.13.0...HEAD
-[0.13.0]: https://github.com/koval-finance/koval-engine/compare/v0.12.1...v0.13.0
+[Unreleased]: https://github.com/koval-finance/koval-engine/compare/v0.12.1...HEAD
 [0.12.1]: https://github.com/koval-finance/koval-engine/compare/v0.12.0...v0.12.1
 [0.12.0]: https://github.com/koval-finance/koval-engine/compare/v0.11.1...v0.12.0
 [0.11.1]: https://github.com/koval-finance/koval-engine/compare/v0.11.0...v0.11.1

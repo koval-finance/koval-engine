@@ -208,33 +208,3 @@ def test_confirmed_stop_update_is_reflected_in_account_position():
     assert account.snapshot().open_position.current_stop == 95.0
     with pytest.raises(ValueError, match="increase risk"):
         account.on_stop_update(94.0)
-
-
-def test_account_checkpoint_restores_daily_peak_margin_and_shared_ledger():
-    import pytest
-
-    from koval.engine.account_ledger import AccountLedger
-    from koval.engine.account_state import PlatformAccountState
-
-    ledger = AccountLedger(10_000.0)
-    account = PlatformAccountState(starting_balance=10_000.0, ledger=ledger)
-    account.on_bar(equity=10_500.0, timestamp_ms=0)
-    account.on_open(
-        side="buy",
-        entry_price=100.0,
-        quantity=2.0,
-        current_stop=95.0,
-        margin=200.0,
-    )
-    account.on_funding(-5.0, timestamp_ms=1, reference_id="funding-1")
-    checkpoint = account.checkpoint()
-
-    restored = PlatformAccountState.from_checkpoint(checkpoint, ledger=ledger)
-
-    assert restored.ledger is ledger
-    assert restored.checkpoint() == checkpoint
-    assert restored.snapshot() == account.snapshot()
-
-    changed = {**checkpoint, "equity": 1.0}
-    with pytest.raises(ValueError, match="hash mismatch"):
-        PlatformAccountState.from_checkpoint(changed, ledger=ledger)

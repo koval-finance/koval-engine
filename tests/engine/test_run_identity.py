@@ -10,7 +10,6 @@ from koval.engine.live_engine import LiveEngine, LiveEngineConfig
 from koval.engine.live_feed import ReplayFeed, StopSignal
 from koval.engine.paper_broker import PaperBroker
 from koval.engine.paper_profile import resolve_paper_profile
-from koval.engine.run_identity import content_sha256
 from koval.exchanges.sandbox_factory import SandboxBrokerConfig, build_broker
 from tests.engine.live_fixtures import ema_cross_graph
 from tests.engine.test_runtime_contract import EXECUTION
@@ -61,23 +60,6 @@ def test_factory_preserves_all_evidence_and_records_content_identity():
         },
     )
     assert changed.execution_evidence != broker.execution_evidence
-
-
-def test_normalized_identity_excludes_raw_transport_responses():
-    from koval.engine.fee_evidence import FeeScheduleEvidence
-
-    first = FeeScheduleEvidence(
-        "fees",
-        1,
-        4,
-        "USDT",
-        "current_snapshot",
-        "test",
-        raw_response={"request_id": "first"},
-    )
-    second = replace(first, raw_response={"request_id": "second"})
-
-    assert content_sha256(first) == content_sha256(second)
 
 
 def test_missing_evidence_is_explicit_even_with_realistic_profile():

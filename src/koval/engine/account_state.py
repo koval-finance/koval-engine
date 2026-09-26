@@ -10,10 +10,9 @@ standalone GraphStrategy instances maintain a fallback through position hooks.
 from __future__ import annotations
 
 import math
-from dataclasses import asdict, dataclass, replace
+from dataclasses import dataclass, replace
 
 from koval.engine.account_ledger import AccountLedger, LedgerReconciliation
-from koval.engine.run_identity import content_sha256
 
 _MS_PER_DAY = 86_400_000
 
@@ -72,48 +71,6 @@ class PlatformAccountState:
     @property
     def ledger(self) -> AccountLedger:
         return self._ledger
-
-    def checkpoint(self) -> dict:
-        """Return the non-ledger account state tied to one ledger identity."""
-        value = {
-            "version": "koval_platform_account_checkpoint_v1",
-            "starting_balance": self._starting,
-            "ledger_sha256": self._ledger.checkpoint()["sha256"],
-            "equity": self._equity,
-            "peak_equity": self._peak_equity,
-            "margin_used": self._margin_used,
-            "position": None if self._position is None else asdict(self._position),
-            "current_day": self._current_day,
-            "day_start_equity": self._day_start_equity,
-        }
-        return {**value, "sha256": content_sha256(value)}
-
-    @classmethod
-    def from_checkpoint(
-        cls,
-        checkpoint: dict,
-        *,
-        ledger: AccountLedger,
-    ) -> PlatformAccountState:
-        """Restore account-derived state against the already restored ledger."""
-        value = {key: item for key, item in checkpoint.items() if key != "sha256"}
-        if checkpoint.get("sha256") != content_sha256(value):
-            raise ValueError("platform account checkpoint hash mismatch")
-        if value.get("version") != "koval_platform_account_checkpoint_v1":
-            raise ValueError("unsupported platform account checkpoint version")
-        if value.get("ledger_sha256") != ledger.checkpoint()["sha256"]:
-            raise ValueError("platform account checkpoint ledger mismatch")
-        account = cls(value["starting_balance"], ledger=ledger)
-        account._equity = float(value["equity"])
-        account._peak_equity = float(value["peak_equity"])
-        account._margin_used = float(value["margin_used"])
-        position = value.get("position")
-        account._position = None if position is None else OpenPosition(**position)
-        account._current_day = value.get("current_day")
-        account._day_start_equity = float(value["day_start_equity"])
-        if account.checkpoint() != checkpoint:
-            raise ValueError("platform account checkpoint is not canonical")
-        return account
 
     def on_bar(self, *, equity: float, timestamp_ms: int) -> None:
         equity = float(equity)

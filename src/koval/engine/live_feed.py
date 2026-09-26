@@ -189,17 +189,7 @@ class PollingFeed:
             # it must never be absorbed by the transient-error backoff.
             now = self._now()
             try:
-                recent_start = max(0, now - self._tf_ms * (self._lookback + 1))
-                # A restored/reconnected session must request every candle after
-                # its durable cursor, even when the outage exceeds the ordinary
-                # lookback.  The adapter owns any pagination required for this
-                # explicit range; skipping directly to a recent window would
-                # convert an observable gap into lost strategy decisions.
-                start = (
-                    recent_start
-                    if self._last_ts is None
-                    else min(recent_start, self._last_ts + self._tf_ms)
-                )
+                start = now - self._tf_ms * (self._lookback + 1)
                 candles = self._fetch_with_supervision(stop, start=start, end=now)
                 if candles is None:
                     return
