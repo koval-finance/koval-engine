@@ -4,10 +4,12 @@ drives. One executor per strategy instance (parallel-run safe)."""
 from __future__ import annotations
 
 from collections.abc import Callable
+from copy import deepcopy
 
 from koval.engine.account_state import PlatformAccountState
 from koval.strategy.base.declarative import DeclarativeStrategy
 from koval.strategy.base.trade_setup import TradeSetup
+from koval.strategy.graph.evidence import DecisionRecorder
 from koval.strategy.graph.executor import GraphExecutor, StepResult
 from koval.strategy.graph.indicators import PreparedIndicators
 from koval.strategy.graph.node import BarContext
@@ -69,6 +71,10 @@ def build_graph_strategy(
                 position_direction=self.position_direction,
                 symbol=str(self.config.get("symbol", "")),
                 account=account,
+                evidence=DecisionRecorder(),
+                decision_timestamp_ms=getattr(self, "decision_timestamp_ms", None),
+                history_start_ms=getattr(self, "history_start_ms", None),
+                timeframe=self.config.get("timeframe"),
                 indicators=None
                 if self._indicators is None or self.closes is None
                 else self._indicators.at(self.timestamp_ms, len(self.closes)),
@@ -108,9 +114,21 @@ def build_graph_strategy(
                 raise RuntimeError("graph produced intent without OrderRequest")
             o = orders[0]
             self._open_order_meta = dict(o.metadata)
-            reasoning = ""
-            if result.intents:
-                reasoning = result.intents[0].metadata.get("reasoning_chain", "")
+            context = result.decision_context or {}
+            contributing_ids = {n["runtime_node_id"] for n in context.get("nodes", [])}
+            reasoning = next(
+                (
+                    intent.metadata.get("reasoning_chain", "")
+                    for intent in result.intents
+                    if intent.source_node_id in contributing_ids
+                ),
+                "",
+            )
+            observed_reasons = [
+                f"{n['node_type']} ({n['node_id']}): {n['predicate']}"
+                for n in sorted(context.get("nodes", []), key=lambda n: n["role"] != "fact")
+                if n["result"] == "passed" and n["predicate"]
+            ]
             setup = TradeSetup(
                 direction=direction,
                 entry_price=o.entry_price,
@@ -118,7 +136,13 @@ def build_graph_strategy(
                 take_profit=o.target_price,
                 size=o.quantity,
                 entry_type=o.order_type,
-                why_entry=[reasoning] if reasoning else [],
+                why_entry=[reasoning] if reasoning else observed_reasons,
+                decision_context=deepcopy(result.decision_context),
+                indicators_at_entry={
+                    n["runtime_node_id"]: {**deepcopy(n["params"]), **deepcopy(n["values"])}
+                    for n in (result.decision_context or {}).get("nodes", [])
+                    if n["values"]
+                },
             )
             self._open_trade_setup = setup
             self._open_current_stop = o.stop_price

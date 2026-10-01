@@ -15,6 +15,7 @@ from pydantic import Field
 
 from koval.strategy.graph.domains import Domain
 from koval.strategy.graph.entities import OrderRequest, TradingIntent
+from koval.strategy.graph.evidence import RiskEvidence, observe
 from koval.strategy.graph.node import NodeEvaluate, NodeSpec
 from koval.strategy.graph.ports import PortSpec
 from koval.strategy.graph.registry import register_node
@@ -56,6 +57,21 @@ def _order_constructor_factory(p: OrderConstructorParams) -> NodeEvaluate:
             stop_loss=sl,
             direction=direction,
             leverage=p.leverage,
+        )
+        observe(
+            ctx,
+            risk=RiskEvidence(
+                "equity",
+                float(ctx.account_value),
+                p.risk_pct,
+                float(ctx.account_value) * p.risk_pct / 100,
+                entry,
+                sl,
+                tp,
+                qty,
+            ),
+            values={"entry": entry, "stop_loss": sl, "take_profit": tp, "quantity": qty},
+            result="recorded",
         )
         return {
             "order": OrderRequest(

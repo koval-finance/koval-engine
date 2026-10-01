@@ -28,6 +28,9 @@ def context_from_raw(raw: dict[str, Any], trade_id: int) -> dict[str, Any]:
     exit_text = str(raw.get("exit_reason", "")) or "Unknown"
     return {
         "trade_id": trade_id,
+        "execution_trade_id": raw.get("id"),
+        "decision_id": raw.get("decision_id"),
+        "indicators_at_exit": deepcopy(raw.get("indicators_at_exit") or {}),
         "decision_context": deepcopy(raw.get("decision_context")),
         "entry_order_id": raw.get("entry_order_id"),
         "pattern": (
@@ -44,6 +47,6 @@ def context_from_raw(raw: dict[str, Any], trade_id: int) -> dict[str, Any]:
         "sl_history": _as_list(raw.get("sl_history")),
         "why_entry": why_entry,
         "why_exit": _as_list(raw.get("why_exit")),
-        "indicators_at_entry": dict(raw.get("indicators_at_entry") or {}),
+        "indicators_at_entry": deepcopy(raw.get("indicators_at_entry") or {}),
         "metadata": dict(raw.get("metadata") or {}),
     }

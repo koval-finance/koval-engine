@@ -41,6 +41,7 @@ class TradeSetup:
     sl_calc_expr: str | None = None
     tp_calc_expr: str | None = None
     annotations: list[ChartAnnotation] = field(default_factory=list)
+    decision_context: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)

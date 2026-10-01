@@ -158,3 +158,18 @@ MIT — see [LICENSE](https://github.com/koval-finance/koval-engine/blob/main/LI
 ## Hosted product
 
 [koval.finance](https://koval.finance) is a separate commercial hosted product built on this engine.
+
+## Historical trade explanations
+
+Graph strategies can attach an optional versioned `decision_context` to each
+`TradeSetup`: actual observed indicator values, checked conditions, original
+signal times, and initial risk sizing. Supported founder blocks record these
+during evaluation; missing observations remain explicit. Execution plugins can
+preserve this snapshot alongside their own order/fill ledger. Historical price
+bars alone cannot prove a live fill or profitability.
+
+For charting, `koval.strategy.graph.series.strategy_indicator_series` returns
+timestamped **derived** RSI, EMA, MACD and ATR series from saved graph parameters
+and supplied candles. This is separate from the recorded decision snapshot.
+See [the graph contract](https://github.com/koval-finance/koval-engine/blob/main/agents_docs/graph_contracts.md) for timing and history
+semantics.

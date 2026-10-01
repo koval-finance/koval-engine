@@ -9,11 +9,13 @@ from typing import Any
 
 from koval.strategy.graph.domains import Domain
 from koval.strategy.graph.entities import MarketEvent, MarketState, PolicyDecision
+from koval.strategy.graph.evidence import observe
 from koval.strategy.graph.indicators import atr_allowed, ema_trend
 from koval.strategy.graph.node import BarContext, NodeEvaluate, NodeSpec
 from koval.strategy.graph.ports import PortSpec
 from koval.strategy.graph.registry import register_node
-from koval.strategy.helpers.filters.momentum import macd_filter, rsi_filter, stoch_filter
+from koval.strategy.helpers._math import _macd, _rsi
+from koval.strategy.helpers.filters.momentum import stoch_filter
 from koval.strategy.helpers.filters.trend import adx_filter
 from koval.strategy.helpers.filters.volatility import (
     bb_volatility_filter,
@@ -59,11 +61,42 @@ def _decision(ctx: BarContext, allowed: bool, reason: str | None) -> PolicyDecis
 def _wrap(predicate: Callable[[BarContext, Any], bool], reason: str):
     def factory(p) -> NodeEvaluate:
         def evaluate(ctx, inputs, state):
+            observe(ctx, inputs=())  # Filter helpers use BarContext, not the optional context port.
             return {"policy": _decision(ctx, predicate(ctx, p), reason)}
 
         return evaluate
 
     return factory
+
+
+def _rsi_observed(ctx, p):
+    current = _rsi(ctx.closes, p.period)
+    allowed = p.min_val <= current <= p.max_val
+    observe(
+        ctx,
+        values={"current": current, "min_val": p.min_val, "max_val": p.max_val},
+        predicate="min_val <= current <= max_val",
+        result="passed" if allowed else "failed",
+    )
+    return allowed
+
+
+def _macd_observed(ctx, p):
+    line, signal, histogram = _macd(ctx.closes, p.fast, p.slow, p.signal_period)
+    allowed = abs(histogram) >= 1e-9 and (histogram > 0 if p.require_positive else histogram < 0)
+    observe(
+        ctx,
+        values={
+            "macd": line,
+            "signal": signal,
+            "histogram": histogram,
+            "require_positive": p.require_positive,
+        },
+        predicate="abs(histogram) >= 1e-9 and "
+        + ("histogram > 0" if p.require_positive else "histogram < 0"),
+        result="passed" if allowed else "failed",
+    )
+    return allowed
 
 
 def _register() -> None:
@@ -77,10 +110,7 @@ def _register() -> None:
             _CONTEXT_IN,
             _POLICY_OUT,
             _wrap(
-                lambda c, p: (
-                    _has(c.closes, p.period + 1)
-                    and rsi_filter(c.closes, period=p.period, min_val=p.min_val, max_val=p.max_val)
-                ),
+                lambda c, p: _has(c.closes, p.period + 1) and _rsi_observed(c, p),
                 "rsi_out_of_band",
             ),
         )
@@ -193,16 +223,7 @@ def _register() -> None:
             _CONTEXT_IN,
             _POLICY_OUT,
             _wrap(
-                lambda c, p: (
-                    _has(c.closes, p.slow + p.signal_period)
-                    and macd_filter(
-                        c.closes,
-                        fast=p.fast,
-                        slow=p.slow,
-                        signal_period=p.signal_period,
-                        require_positive=p.require_positive,
-                    )
-                ),
+                lambda c, p: _has(c.closes, p.slow + p.signal_period) and _macd_observed(c, p),
                 "macd_sign_mismatch",
             ),
         )

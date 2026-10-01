@@ -16,6 +16,7 @@ from koval.strategy.graph.ports import PortSpec
 
 if TYPE_CHECKING:
     from koval.engine.account_state import AccountSnapshot
+    from koval.strategy.graph.evidence import DecisionRecorder
     from koval.strategy.graph.indicators import IndicatorValues
 
 
@@ -49,6 +50,10 @@ class BarContext:
     symbol: str = ""
     account: AccountSnapshot | None = None
     indicators: IndicatorValues | None = None
+    evidence: DecisionRecorder | None = None
+    decision_timestamp_ms: int | None = None
+    history_start_ms: int | None = None
+    timeframe: str | None = None
 
 
 # Cross-bar mutable state for one node. Plain dict so it stays picklable.
@@ -82,3 +87,4 @@ class GraphNode:
     spec: NodeSpec
     params: BaseModel
     evaluate: NodeEvaluate = field(repr=False)
+    source_node_ids: list[str] = field(default_factory=list)

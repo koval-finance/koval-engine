@@ -62,6 +62,8 @@ def _event_aggregator_factory(p: EventAggregatorParams) -> NodeEvaluate:
             for chain in chains:  # oldest first
                 if _can_take(chain, kind, direction, p):
                     chain["matched"].append([ev.source_node_id, ev.bar_index, kind, direction])
+                    if ctx.evidence is not None:
+                        chain.setdefault("evidence", []).extend(ctx.evidence.observations(ev))
                     chain["remaining"].remove(kind)
                     if p.direction_policy == "consistent" and chain["direction"] is None:
                         chain["direction"] = direction
@@ -76,6 +78,7 @@ def _event_aggregator_factory(p: EventAggregatorParams) -> NodeEvaluate:
                 chains.append(
                     {
                         "matched": [[ev.source_node_id, ev.bar_index, kind, direction]],
+                        "evidence": [] if ctx.evidence is None else ctx.evidence.observations(ev),
                         "remaining": remaining,
                         "deadline_bar": ctx.bar_index + p.timeout_bars,
                         "direction": direction if p.direction_policy == "consistent" else None,
@@ -94,6 +97,8 @@ def _event_aggregator_factory(p: EventAggregatorParams) -> NodeEvaluate:
             return {"candidate": None}
         complete.sort(key=lambda c: (c["matched"][0][1], c["matched"][0][0]))
         chosen = complete[0]
+        if ctx.evidence is not None:
+            ctx.evidence.retain(chosen.get("evidence", []), [m[0] for m in chosen["matched"]])
         matched = chosen["matched"]
         kinds = [m[2] for m in matched]
         first_bar, last_bar = matched[0][1], matched[-1][1]

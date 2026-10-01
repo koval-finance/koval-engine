@@ -9,6 +9,7 @@ from pydantic import Field
 
 from koval.strategy.graph.domains import Domain
 from koval.strategy.graph.entities import MarketEvent, MarketState
+from koval.strategy.graph.evidence import observe
 from koval.strategy.graph.indicators import atr_allowed, ema_pair
 from koval.strategy.graph.node import BarContext, NodeEvaluate, NodeSpec
 from koval.strategy.graph.ports import PortSpec
@@ -55,15 +56,23 @@ def _state(ctx: BarContext, kind: str, status: str, state: dict) -> MarketState:
 
 def _trend_bias_factory(p: TrendBiasParams) -> NodeEvaluate:
     def evaluate(ctx, inputs, state):
+        observe(ctx, inputs=())  # This state derives only from the current price history.
         if not _has(ctx.closes, p.period):
             return {"state": _state(ctx, "trend_bias", "neutral", state)}
         current_ema = ema_pair(ctx, p.period)[1]
+        observe(
+            ctx,
+            values={"ema": current_ema, "close": float(ctx.closes[-1])},
+            predicate="close > ema: bullish; close < ema: bearish; else neutral",
+            result="recorded",
+        )
         if ctx.closes[-1] > current_ema:
             status = "bullish"
         elif ctx.closes[-1] < current_ema:
             status = "bearish"
         else:
             status = "neutral"
+        observe(ctx, values={"status": status})
         return {"state": _state(ctx, "trend_bias", status, state)}
 
     return evaluate
@@ -71,6 +80,7 @@ def _trend_bias_factory(p: TrendBiasParams) -> NodeEvaluate:
 
 def _volatility_regime_factory(p: VolatilityRegimeParams) -> NodeEvaluate:
     def evaluate(ctx, inputs, state):
+        observe(ctx, inputs=())  # The optional context port does not enter the calculation.
         if not (
             _has(ctx.highs, p.period + 1)
             and _has(ctx.lows, p.period + 1)
@@ -79,6 +89,7 @@ def _volatility_regime_factory(p: VolatilityRegimeParams) -> NodeEvaluate:
             return {"state": _state(ctx, "volatility_regime", "normal", state)}
         expanded = atr_allowed(ctx, p.period, p.min_atr_pct)
         status = "expansion" if expanded else "compression"
+        observe(ctx, values={"status": status}, result="recorded")
         return {"state": _state(ctx, "volatility_regime", status, state)}
 
     return evaluate

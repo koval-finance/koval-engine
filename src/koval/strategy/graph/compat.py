@@ -218,6 +218,7 @@ def compile_legacy(graph: dict) -> dict:
         {
             "id": gate_id,
             "type": "interp.direction_gate",
+            "source_node_ids": [entry["id"]],
             "params": {"allow_long": allow_long, "allow_short": allow_short},
         }
     )
@@ -250,6 +251,7 @@ def compile_legacy(graph: dict) -> dict:
         {
             "id": order_id,
             "type": "exec.order_constructor",
+            "source_node_ids": [entry["id"], by_cat["exit"][0]["id"], by_cat["risk"][0]["id"]],
             "params": {**exit_p, **risk_p, "entry_type": entry_type},
         }
     )

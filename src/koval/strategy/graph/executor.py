@@ -20,6 +20,7 @@ class StepResult:
     entities_by_node: dict[str, dict[str, Entity | None]] = field(default_factory=dict)
     intents: list[TradingIntent] = field(default_factory=list)
     orders: list[OrderRequest] = field(default_factory=list)
+    decision_context: dict | None = None
 
 
 @dataclass
@@ -50,7 +51,11 @@ class GraphExecutor:
         for b in graph["blocks"]:
             spec = NODE_CATALOG[b["type"]]
             params = spec.params_schema(**(b.get("params") or {}))
-            nodes.append(GraphNode(b["id"], spec, params, spec.factory(params)))
+            nodes.append(
+                GraphNode(
+                    b["id"], spec, params, spec.factory(params), b.get("source_node_ids", [b["id"]])
+                )
+            )
         edges = [
             _Edge(c["from"], c["from_port"], c["to"], c["to_port"])
             for c in (graph.get("connections") or [])
@@ -89,6 +94,8 @@ class GraphExecutor:
                 if produced is not None:
                     inputs[e.dst_port].append(produced)
             node_state = self.state.get(nid)
+            if ctx.evidence is not None:
+                ctx.evidence.begin(node, ctx, inputs)
             produced_map = node.evaluate(ctx, inputs, node_state)
             self._validate_outputs(node, produced_map)
             produced_map = {
@@ -99,6 +106,8 @@ class GraphExecutor:
                 )
                 for port_name, entity in produced_map.items()
             }
+            if ctx.evidence is not None:
+                ctx.evidence.finish(produced_map)
             outputs[nid] = produced_map
             for port_name, ent in produced_map.items():
                 if isinstance(ent, TradingIntent):
@@ -111,6 +120,12 @@ class GraphExecutor:
                     # A terminal declaration is an explicit execution boundary.
                     # Unconsumed draft/pricing/sizing outputs never leave the graph.
                     result.orders.append(ent)
+        if ctx.evidence is not None:
+            # GraphStrategy executes the first terminal order. Bind its evidence
+            # here so other orders and unrelated evaluated branches cannot leak in.
+            result.decision_context = ctx.evidence.snapshot(
+                ctx, result.orders[0] if result.orders else None
+            )
         result.entities_by_node = outputs
         return result
 

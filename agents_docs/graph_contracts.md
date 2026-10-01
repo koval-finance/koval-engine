@@ -83,3 +83,57 @@ the previous rolling window. Work remains O(bars × history); NumPy removes
 per-element Python execution. Temporary vectors are bounded by a 4,096-window
 tile, and tables occupy O(bars × distinct requested indicators). Tests compare
 exact helper values, causal prefixes, state transitions and dtype normalization.
+
+## Optional decision evidence and chart series
+
+`BarContext.evidence` observes the current evaluation through `DecisionRecorder`.
+It produces version `koval_trade_decision_context_v1`, copied to
+`StepResult.decision_context` and then `TradeSetup.decision_context`. Founder
+RSI/EMA facts, MACD/RSI/EMA/ATR policies and states, native aggregation/scoring,
+and order risk expose actual parameters, scalar values, predicates and results.
+Unsupported observations stay `partial` or `unavailable`; an empty context must
+never be presented as a passed condition. No OHLCV arrays are embedded.
+
+Legacy compilation retains source block IDs. Native temporal aggregation keeps
+the original contributing fact snapshot and timestamp, including when a later
+bar completes the chain. Consumers must distinguish signal candle open time,
+decision time, and subsequent execution times. Recording does not rerun nodes
+or change their mathematical predicates. Compatibility entry indicators and
+reasons are projections of the same observations.
+
+For a step that emits orders, `StepResult.decision_context` belongs to the first
+terminal order, matching `GraphStrategy`'s existing selection. Risk is recorded
+under the constructing node, and only that order's emitted-input dependencies
+appear in the context, entry indicators, and fallback reasons. An unrelated
+intent cannot supply `why_entry`. Disconnected nodes and other terminal orders
+remain in `StepResult.entities_by_node` for diagnostics but do not affect the
+selected trade's evidence status. A step without orders retains all observed
+nodes as diagnostic context and has no selected-order risk.
+
+Temporal aggregators select evidence from the same completed chain they emit,
+including its saved upstream observations. They exclude competing chains and
+current observations that did not contribute to the chosen chain. Observation
+identity is `(runtime_node_id, timestamp_ms)`, so repeated occurrences of one
+fact remain distinct. Retention and exported snapshots are detached copies.
+This selection changes neither the entity/port contracts nor order execution;
+the decision-context version remains `koval_trade_decision_context_v1`. Native
+execution nodes without risk instrumentation still expose missing risk, never
+another order constructor's risk.
+
+Connected inputs are a default dependency set, not proof that a node consumed
+them. A node that ignores or selects inputs must call `observe(ctx, inputs=...)`
+with the entities actually used; an empty collection clears dependencies.
+Built-in policy filters and trend/volatility states calculate from `BarContext`
+and ignore their optional `context` ports. Context scoring records the last
+state of each kind that supplies a scoring key, matching the calculation;
+earlier duplicates and ignored state kinds/statuses are excluded. Temporal
+selection continues to use `retain(...)` for observations saved across bars.
+
+`koval.strategy.graph.series.strategy_indicator_series` is the public derived
+chart API. It resolves saved graph defaults and uses the node formulas with the
+same bounded history (default 1000). Points have timestamps and null warmup
+values; repeated indicator types retain separate node IDs. It never invokes the
+strategy evaluator and must not be labeled recorded decision evidence. Callers
+must check the engine identity and compare overlapping recorded observations.
+Tests: `test_decision_evidence.py` and `test_strategy_series.py` under
+`tests/strategy/graph/`.

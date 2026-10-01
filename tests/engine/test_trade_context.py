@@ -44,3 +44,19 @@ def test_recorded_decision_context_is_preserved_without_manufacturing_missing_va
     assert context["decision_context"] == raw["decision_context"]
     assert context["entry_order_id"] == "entry-1"
     assert context_from_raw({}, 2)["decision_context"] is None
+
+
+def test_context_keeps_exit_values_and_execution_ids_without_aliasing():
+    raw = {
+        "id": 27,
+        "decision_id": "decision-8",
+        "entry_order_id": "order-9",
+        "indicators_at_exit": {"rule": {"passed": False, "zero": 0, "unknown": None}},
+        "decision_context": {"nodes": [{"values": {"x": 1}}]},
+    }
+    ctx = context_from_raw(raw, 0)
+    assert ctx["execution_trade_id"] == 27
+    assert ctx["decision_id"] == "decision-8"
+    assert ctx["indicators_at_exit"] == raw["indicators_at_exit"]
+    raw["indicators_at_exit"]["rule"]["zero"] = 5
+    assert ctx["indicators_at_exit"]["rule"]["zero"] == 0

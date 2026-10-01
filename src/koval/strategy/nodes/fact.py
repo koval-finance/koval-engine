@@ -14,6 +14,7 @@ import numpy as np
 
 from koval.strategy.graph.domains import Domain
 from koval.strategy.graph.entities import MarketEvent
+from koval.strategy.graph.evidence import observe
 from koval.strategy.graph.indicators import ema_pair, rsi_pair
 from koval.strategy.graph.node import BarContext, NodeEvaluate, NodeSpec
 from koval.strategy.graph.ports import PortSpec
@@ -233,6 +234,19 @@ def _ema_cross_factory(p: EmaCrossParams) -> NodeEvaluate:
             if prev_above and not curr_above
             else "none"
         )
+        observe(
+            ctx,
+            values={
+                "fast_period": p.fast,
+                "slow_period": p.slow,
+                "previous_fast": prev_fast,
+                "fast": curr_fast,
+                "previous_slow": prev_slow,
+                "slow": curr_slow,
+            },
+            predicate="previous_fast <= previous_slow and fast > slow; or previous_fast > previous_slow and fast <= slow",
+            result="passed" if d != "none" else "failed",
+        )
         return {"event": None if d == "none" else _event(ctx, "ema_cross", d)}
 
     return evaluate
@@ -247,6 +261,14 @@ def _rsi_cross_factory(p: RsiCrossParams) -> NodeEvaluate:
             previous < p.level <= current
             if p.direction == "cross_up"
             else previous > p.level >= current
+        )
+        observe(
+            ctx,
+            values={"previous": previous, "current": current, "level": p.level},
+            predicate="previous < level <= current"
+            if p.direction == "cross_up"
+            else "previous > level >= current",
+            result="passed" if crossed else "failed",
         )
         if not crossed:
             return {"event": None}

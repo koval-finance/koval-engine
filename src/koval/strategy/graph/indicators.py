@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from koval.engine.history_window import resolve_history_bars
+from koval.strategy.graph.evidence import observe
 from koval.strategy.helpers._math import _atr, _ema, _rsi
 from koval.strategy.helpers.rolling_indicators import rolling_atr, rolling_ema, rolling_rsi
 
@@ -102,7 +103,14 @@ def rsi_pair(ctx: BarContext, period: int) -> tuple[float, float]:
 def ema_trend(ctx: BarContext, period: int, direction: str) -> bool:
     current = ema_pair(ctx, period)[1]
     close = float(ctx.closes[-1])
-    return close > current if direction == "bullish" else close < current
+    allowed = close > current if direction == "bullish" else close < current
+    observe(
+        ctx,
+        values={"ema": current, "close": close},
+        predicate="close > ema" if direction == "bullish" else "close < ema",
+        result="passed" if allowed else "failed",
+    )
+    return allowed
 
 
 def atr_allowed(ctx: BarContext, period: int, min_atr_pct: float) -> bool:
@@ -111,4 +119,16 @@ def atr_allowed(ctx: BarContext, period: int, min_atr_pct: float) -> bool:
     else:
         atr = _atr(ctx.highs, ctx.lows, ctx.closes, period)
     close = float(ctx.closes[-1])
-    return atr != 0.0 and close != 0.0 and (atr / close) * 100.0 >= min_atr_pct
+    allowed = atr != 0.0 and close != 0.0 and (atr / close) * 100.0 >= min_atr_pct
+    observe(
+        ctx,
+        values={
+            "atr": atr,
+            "close": close,
+            "atr_pct": (atr / close) * 100.0 if close else None,
+            "min_atr_pct": min_atr_pct,
+        },
+        predicate="atr != 0 and close != 0 and atr_pct >= min_atr_pct",
+        result="passed" if allowed else "failed",
+    )
+    return allowed

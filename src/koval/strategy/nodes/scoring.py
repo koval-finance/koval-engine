@@ -15,6 +15,7 @@ from koval.strategy.graph.entities import (
     SetupCandidate,
     TradingIntent,
 )
+from koval.strategy.graph.evidence import observe
 from koval.strategy.graph.node import NodeEvaluate, NodeSpec
 from koval.strategy.graph.ports import PortSpec
 from koval.strategy.graph.registry import register_node
@@ -66,27 +67,29 @@ class ContextScoreParams(_StrictModel):
     points: dict[str, int] = {}
 
 
-def _context_keys(direction: str, states: list[MarketState]) -> list[str]:
+def _context_score_inputs(
+    direction: str, states: list[MarketState]
+) -> tuple[list[str], list[MarketState]]:
     # One key per STATE dimension (last state per kind wins), so duplicate
     # states of the same kind on the fan-in port never double-count.
     by_kind: dict[str, MarketState] = {}
     for s in states:
         by_kind[s.kind] = s
     keys: list[str] = []
+    contributing_states: list[MarketState] = []
     for kind, s in by_kind.items():
         if kind == "trend_bias":
+            contributing_states.append(s)
             if direction == "neutral" or s.status == "neutral":
                 keys.append("trend_neutral")
             elif s.status == direction:
                 keys.append("trend_aligned")
             else:
                 keys.append("counter_trend")
-        elif kind == "volatility_regime":
-            if s.status == "expansion":
-                keys.append("volatility_expansion")
-            elif s.status == "compression":
-                keys.append("volatility_compression")
-    return keys
+        elif kind == "volatility_regime" and s.status in ("expansion", "compression"):
+            keys.append(f"volatility_{s.status}")
+            contributing_states.append(s)
+    return keys, contributing_states
 
 
 def _context_score_factory(p: ContextScoreParams) -> NodeEvaluate:
@@ -95,7 +98,8 @@ def _context_score_factory(p: ContextScoreParams) -> NodeEvaluate:
         if not cands:
             return {"scored": None}
         c = cands[0]
-        keys = _context_keys(c.direction, inputs.get("states", []))
+        keys, contributing_states = _context_score_inputs(c.direction, inputs.get("states", []))
+        observe(ctx, inputs=[c, *contributing_states])
         total, breakdown = score_additive(p.points, keys)
         reasoning = f"Context {total}" + (f" ({breakdown})" if breakdown else "")
         return {
