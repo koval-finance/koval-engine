@@ -413,7 +413,12 @@ def _filter_atr_volatility(p: AtrVolatilityParams) -> Callable[[Any], bool]:
         ):
             return False
         return atr_volatility_filter(
-            s.highs, s.lows, s.closes, period=p.period, min_atr_pct=p.min_atr_pct
+            s.highs,
+            s.lows,
+            s.closes,
+            period=p.period,
+            min_atr_pct=p.min_atr_pct,
+            max_atr_pct=p.max_atr_pct,
         )
 
     return bound
@@ -690,7 +695,9 @@ def _seed_catalog() -> None:
             type="filter.atr_volatility",
             category="filter",
             display_name="ATR Volatility Floor",
-            description="True when ATR / close * 100 >= min_atr_pct.",
+            description=(
+                "True when ATR / close * 100 >= min_atr_pct and, when set, <= max_atr_pct."
+            ),
             params_schema=AtrVolatilityParams,
             factory=_filter_atr_volatility,
         ),

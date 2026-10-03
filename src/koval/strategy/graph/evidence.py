@@ -16,6 +16,7 @@ _SUPPORTED = {
     "policy.macd",
     "policy.rsi",
     "policy.atr_volatility",
+    "policy.cooldown",
     "state.trend_bias",
     "state.volatility_regime",
     "interp.confluence_and",

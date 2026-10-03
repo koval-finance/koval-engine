@@ -21,6 +21,8 @@ CASES = [
     ("policy.ema_trend", {"period": 14, "direction": "bullish"}),
     ("policy.ema_trend", {"period": 14, "direction": "bearish"}),
     ("policy.atr_volatility", {"period": 14, "min_atr_pct": 3}),
+    ("policy.atr_volatility", {"period": 14, "min_atr_pct": 0, "max_atr_pct": 4}),
+    ("policy.atr_volatility", {"period": 14, "min_atr_pct": 3, "max_atr_pct": 5}),
 ]
 
 

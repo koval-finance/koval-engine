@@ -4,14 +4,16 @@ discrete execution pipeline lives in ``exec_pipeline.py``.
 
 ``exec.dynamic_stop`` (trailing / breakeven) is intentionally not implemented as
 a node: its faithful typed form needs open-position feedback that the compat
-GraphStrategy seam already supplies.
+GraphStrategy seam already supplies. A native trailing stop is authored with the
+optional ``trail_pct`` instead; the node only tags the order with it and
+GraphStrategy moves the stop.
 """
 
 from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, model_serializer
 
 from koval.strategy.graph.domains import Domain
 from koval.strategy.graph.entities import OrderRequest, TradingIntent
@@ -33,6 +35,15 @@ class OrderConstructorParams(_StrictModel):
     risk_pct: float = Field(1.0, gt=0, le=100)
     leverage: float = Field(1.0, gt=0)
     entry_type: Literal["market", "limit", "stop"] = "market"
+    trail_pct: float | None = Field(None, gt=0, lt=100)
+
+    @model_serializer(mode="wrap")
+    def _omit_unset_trail(self, handler):
+        # Hosts store and hash these dumps; an unset trail must keep the 0.12.3 shape.
+        data = handler(self)
+        if data.get("trail_pct") is None:
+            data.pop("trail_pct", None)
+        return data
 
 
 def _order_constructor_factory(p: OrderConstructorParams) -> NodeEvaluate:
@@ -85,6 +96,7 @@ def _order_constructor_factory(p: OrderConstructorParams) -> NodeEvaluate:
                 target_price=tp,
                 quantity=qty,
                 order_type=p.entry_type,
+                metadata={} if p.trail_pct is None else {"trail_pct": p.trail_pct},
             )
         }
 

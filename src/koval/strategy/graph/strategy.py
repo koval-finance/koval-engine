@@ -9,15 +9,26 @@ from copy import deepcopy
 from koval.engine.account_state import PlatformAccountState
 from koval.strategy.base.declarative import DeclarativeStrategy
 from koval.strategy.base.trade_setup import TradeSetup
+from koval.strategy.block_assembler import GraphValidationError
 from koval.strategy.graph.evidence import DecisionRecorder
 from koval.strategy.graph.executor import GraphExecutor, StepResult
 from koval.strategy.graph.indicators import PreparedIndicators
 from koval.strategy.graph.node import BarContext
+from koval.strategy.helpers.exits.trailing import trailing_stop_price
 
 
 def build_graph_strategy(
     typed_graph: dict, dynamic_exit_fn: Callable | None = None
 ) -> type[DeclarativeStrategy]:
+    if dynamic_exit_fn is not None and any(
+        b.get("type") == "exec.order_constructor" and (b.get("params") or {}).get("trail_pct")
+        for b in typed_graph.get("blocks") or []
+    ):
+        raise GraphValidationError(
+            "Graph sets exec.order_constructor trail_pct and also carries a legacy "
+            "dynamic_exit block; use one stop-moving mechanism"
+        )
+
     class _GraphStrategy(DeclarativeStrategy):
         def __init__(self) -> None:
             super().__init__()
@@ -174,15 +185,26 @@ def build_graph_strategy(
                 self._account.on_close(realized_pnl=float(result.get("pnl", 0.0)))
 
         def on_sl_update(self, trade_id: int) -> float | None:
-            if self._dyn_exit is None or self._open_trade_setup is None:
+            if self._open_trade_setup is None:
                 return None
-            new_sl = self._dyn_exit(
-                self,
-                trade_id=trade_id,
-                direction=self._open_trade_setup.direction,
-                entry_price=self._open_trade_setup.entry_price,
-                current_stop=self._open_current_stop,
-            )
+            trail_pct = self._open_order_meta.get("trail_pct")
+            if self._dyn_exit is not None:
+                new_sl = self._dyn_exit(
+                    self,
+                    trade_id=trade_id,
+                    direction=self._open_trade_setup.direction,
+                    entry_price=self._open_trade_setup.entry_price,
+                    current_stop=self._open_current_stop,
+                )
+            elif trail_pct is not None:
+                new_sl = trailing_stop_price(
+                    direction=self._open_trade_setup.direction,
+                    current_price=float(self.close),
+                    trail_pct=float(trail_pct),
+                    current_stop=self._open_current_stop,
+                )
+            else:
+                return None
             if new_sl is None or new_sl == self._open_current_stop:
                 return None
             self._open_current_stop = float(new_sl)

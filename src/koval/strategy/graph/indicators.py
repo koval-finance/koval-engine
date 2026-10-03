@@ -113,22 +113,41 @@ def ema_trend(ctx: BarContext, period: int, direction: str) -> bool:
     return allowed
 
 
-def atr_allowed(ctx: BarContext, period: int, min_atr_pct: float) -> bool:
+def atr_block_reason(
+    ctx: BarContext, period: int, min_atr_pct: float, max_atr_pct: float | None = None
+) -> str | None:
+    """None when ATR percent is inside the band, else which side blocked."""
     if ctx.indicators is not None and ("atr", period) in ctx.indicators:
         atr = ctx.indicators["atr", period][1]
     else:
         atr = _atr(ctx.highs, ctx.lows, ctx.closes, period)
     close = float(ctx.closes[-1])
-    allowed = atr != 0.0 and close != 0.0 and (atr / close) * 100.0 >= min_atr_pct
+    values = {
+        "atr": atr,
+        "close": close,
+        "atr_pct": (atr / close) * 100.0 if close else None,
+        "min_atr_pct": min_atr_pct,
+    }
+    predicate = "atr != 0 and close != 0 and atr_pct >= min_atr_pct"
+    if atr == 0.0 or close == 0.0 or (atr / close) * 100.0 < min_atr_pct:
+        reason = "volatility_too_low"
+    elif max_atr_pct is not None and (atr / close) * 100.0 > max_atr_pct:
+        reason = "volatility_too_high"
+    else:
+        reason = None
+    if max_atr_pct is not None:
+        values["max_atr_pct"] = max_atr_pct
+        predicate += " and atr_pct <= max_atr_pct"
     observe(
         ctx,
-        values={
-            "atr": atr,
-            "close": close,
-            "atr_pct": (atr / close) * 100.0 if close else None,
-            "min_atr_pct": min_atr_pct,
-        },
-        predicate="atr != 0 and close != 0 and atr_pct >= min_atr_pct",
-        result="passed" if allowed else "failed",
+        values=values,
+        predicate=predicate,
+        result="failed" if reason else "passed",
     )
-    return allowed
+    return reason
+
+
+def atr_allowed(
+    ctx: BarContext, period: int, min_atr_pct: float, max_atr_pct: float | None = None
+) -> bool:
+    return atr_block_reason(ctx, period, min_atr_pct, max_atr_pct) is None

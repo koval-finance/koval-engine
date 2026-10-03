@@ -639,3 +639,117 @@ def test_context_score_records_only_last_state_of_each_kind(reverse):
     assert states[0]["id"] not in nodes
     assert states[1]["id"] in nodes
     assert nodes["context_score"]["contributing_nodes"] == ["sequence", states[1]["id"]]
+
+
+def _policy_graph(node_type, params):
+    compiled = _order_graph()
+    compiled["blocks"].append({"id": "required", "type": node_type, "params": params})
+    compiled["connections"].append(_edge("required", "policy", "gate", "policies"))
+    return compiled
+
+
+def _atr_evidence(params):
+    # _drive_strategy's flat 100 close with a 99..101 range gives atr_pct == 2.
+    strategy = build_graph_strategy(_policy_graph("policy.atr_volatility", params))()
+    _drive_strategy(strategy)
+    assert strategy.should_long()
+    setup = strategy.go_long()
+    node = next(n for n in setup.decision_context["nodes"] if n["node_id"] == "required")
+    return setup, node
+
+
+def test_atr_volatility_evidence_is_unchanged_without_a_cap():
+    setup, node = _atr_evidence({})
+    assert node["params"] == {"period": 14, "min_atr_pct": 0.5}
+    assert node["values"] == {"atr": 2.0, "close": 100.0, "atr_pct": 2.0, "min_atr_pct": 0.5}
+    assert node["predicate"] == "atr != 0 and close != 0 and atr_pct >= min_atr_pct"
+    assert node["result"] == "passed"
+    assert setup.why_entry == [
+        "policy.atr_volatility (required): atr != 0 and close != 0 and atr_pct >= min_atr_pct"
+    ]
+    assert setup.decision_context["status"] == "recorded"
+
+
+def test_atr_volatility_evidence_names_the_cap_when_set():
+    setup, node = _atr_evidence({"min_atr_pct": 0, "max_atr_pct": 2.0})
+    assert node["params"] == {"period": 14, "min_atr_pct": 0.0, "max_atr_pct": 2.0}
+    assert node["values"] == {
+        "atr": 2.0,
+        "close": 100.0,
+        "atr_pct": 2.0,
+        "min_atr_pct": 0.0,
+        "max_atr_pct": 2.0,
+    }
+    predicate = "atr != 0 and close != 0 and atr_pct >= min_atr_pct and atr_pct <= max_atr_pct"
+    assert node["predicate"] == predicate
+    assert setup.why_entry == [f"policy.atr_volatility (required): {predicate}"]
+
+
+def test_atr_volatility_cap_blocks_the_entry_and_records_the_failure():
+    compiled = _policy_graph("policy.atr_volatility", {"min_atr_pct": 0, "max_atr_pct": 1.5})
+    strategy = build_graph_strategy(compiled)()
+    _drive_strategy(strategy)
+    assert not strategy.should_long()
+    result = strategy._ensure_stepped()
+    node = next(n for n in result.decision_context["nodes"] if n["node_id"] == "required")
+    assert node["result"] == "failed"
+    assert node["outputs"]["policy"]["reason"] == "volatility_too_high"
+
+
+def test_unset_cap_leaves_saved_graph_params_and_their_hash_unchanged():
+    import hashlib
+
+    from koval.strategy.graph.registry import get_node
+    from koval.strategy.graph.series import strategy_indicator_series
+
+    def digest(value):
+        return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
+
+    schema = get_node("policy.atr_volatility").params_schema
+    released = {"period": 14, "min_atr_pct": 0.5}  # The 0.12.2 dump.
+    assert digest(schema().model_dump()) == digest(released)
+    assert digest(schema(**released).model_dump()) == digest(released)
+    assert digest(schema(max_atr_pct=3).model_dump()) != digest(released)
+    compiled = _policy_graph("policy.atr_volatility", {})
+    series = strategy_indicator_series(compiled, rows()[:40], timeframe="1h")
+    assert [s["params"] for s in series] == [released]
+
+
+def test_cooldown_is_recorded_as_a_passed_entry_reason():
+    strategy = build_graph_strategy(_policy_graph("policy.cooldown", {"bars": 2}))()
+    _drive_strategy(strategy)
+    assert strategy.should_long()
+    setup = strategy.go_long()
+    predicate = "position_size == 0 and (flat_bars is None or flat_bars > bars)"
+    assert setup.why_entry == [f"policy.cooldown (required): {predicate}"]
+    context = setup.decision_context
+    assert context["status"] == "recorded"
+    assert context["missing_reasons"] == []
+    node = next(n for n in context["nodes"] if n["node_id"] == "required")
+    assert node["params"] == {"bars": 2}
+    assert node["values"] == {"flat_bars": None, "bars": 2, "position_size": 0.0}
+    assert node["predicate"] == predicate
+    assert node["result"] == "passed"
+    assert node["contributing_nodes"] == []
+
+
+def test_cooldown_blocks_reentry_through_the_strategy_and_records_the_count():
+    strategy = build_graph_strategy(_policy_graph("policy.cooldown", {"bars": 2}))()
+    seen = []
+    for end, size in ((30, 0.0), (31, 1.0), (32, 0.0), (33, 0.0), (34, 0.0)):
+        _drive_strategy(strategy, end)
+        strategy.position_size = size
+        allowed = strategy.should_long()
+        node = next(
+            n
+            for n in strategy._ensure_stepped().decision_context["nodes"]
+            if n["node_id"] == "required"
+        )
+        seen.append((allowed, node["result"], node["values"]["flat_bars"]))
+    assert seen == [
+        (True, "passed", None),
+        (False, "failed", 0),
+        (False, "failed", 1),
+        (False, "failed", 2),
+        (True, "passed", 3),
+    ]

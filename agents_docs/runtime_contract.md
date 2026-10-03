@@ -6,7 +6,7 @@ acceptance must be measured independently.
 
 ## Versions and compatibility
 
-The package release is `0.12.2`. `ENGINE_PROTOCOL_VERSION` is `2`;
+The package release is `0.12.4`. `ENGINE_PROTOCOL_VERSION` is `2`;
 protocol `1` remains accepted only without an explicit `runtime_contract`.
 The fill/runtime identifier remains `koval_runtime_v2`; input identity remains
 `koval_run_identity_v1`. These names do not certify venue realism.

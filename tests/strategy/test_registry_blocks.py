@@ -363,3 +363,12 @@ def test_factory_returns_value_matching_category_contract(block_type):
         assert size >= 0.0
     else:
         pytest.fail(f"Unknown category {spec.category!r} for {block_type}")
+
+
+def test_filter_atr_volatility_applies_the_optional_cap():
+    spec = get_block("filter.atr_volatility")
+    closes = np.full(20, 100.0)
+    stub = _Stub(closes=closes, highs=closes + 1.0, lows=closes - 1.0)  # atr_pct == 2
+    assert spec.factory(spec.params_schema(min_atr_pct=0))(stub) is True
+    assert spec.factory(spec.params_schema(min_atr_pct=0, max_atr_pct=2.0))(stub) is True
+    assert spec.factory(spec.params_schema(min_atr_pct=0, max_atr_pct=1.5))(stub) is False

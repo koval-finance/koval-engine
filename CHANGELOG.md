@@ -6,6 +6,47 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.12.4] - 2026-10-03
+
+### Added
+
+- `exec.order_constructor` accepts an optional `trail_pct` (`> 0` and `< 100`).
+  When it is set on a native typed graph, `GraphStrategy.on_sl_update` trails the
+  stop from the bar close with the existing `trailing_stop_price` helper: a long
+  stop only rises, a short stop only falls, and the hook returns `None` when the
+  stop does not move. The initial stop still comes from `sl_pct`, and position
+  size and the take-profit are unchanged. The order carries the value in
+  `OrderRequest.metadata["trail_pct"]`, and decision evidence records it in the
+  node's params. With `trail_pct` unset, serialized parameters, order metadata
+  and evidence are identical to 0.12.3, so saved graphs keep their hashes.
+- A graph that sets `trail_pct` and also carries a legacy `dynamic_exit` block
+  is rejected with `GraphValidationError`. Legacy `exit.trailing_stop` and
+  `exit.breakeven` graphs and `compile_legacy` behave as before.
+
+## [0.12.3] - 2026-10-03
+
+### Added
+
+- `policy.cooldown` node (`bars >= 1`): blocks entries while a position is open
+  and for `bars` flat bars after it closes, with reason `cooldown_active`. The
+  exit bar is flat bar 1, so entries resume on flat bar `bars + 1`; a strategy
+  that has never held a position is always allowed. The count lives in the
+  node's own state and is recorded in decision evidence and `why_entry`. The
+  node sees exits only through `BarContext.position_size` at bar close, so an
+  entry and exit inside one bar are invisible to it. It has no legacy `filter.*`
+  counterpart.
+- `policy.atr_volatility` and `filter.atr_volatility` accept an optional
+  `max_atr_pct` (`> 0` and `> min_atr_pct`). A bar above the cap is blocked with
+  reason `volatility_too_high`; the floor keeps `volatility_too_low`. A cap-only
+  filter sets `min_atr_pct` to `0`. With the cap unset, serialized parameters,
+  evidence values and the evidence predicate are identical to 0.12.2, so saved
+  graphs keep their hashes.
+
+### Changed
+
+- The `policy.atr_volatility` display name is now `ATR Volatility Band`
+  (previously `ATR Floor`).
+
 ## [0.12.2] - 2026-09-26
 
 ### Fixed
@@ -347,7 +388,9 @@ First public release.
 - The MIT/GPL boundary is enforced by a test rather than by convention: no file in this package may import Backtrader.
 - Releases are published to PyPI through Trusted Publishing (OIDC) with PEP 740 attestations. No long-lived PyPI credential is used in CI.
 
-[Unreleased]: https://github.com/koval-finance/koval-engine/compare/v0.12.2...HEAD
+[Unreleased]: https://github.com/koval-finance/koval-engine/compare/v0.12.4...HEAD
+[0.12.4]: https://github.com/koval-finance/koval-engine/compare/v0.12.3...v0.12.4
+[0.12.3]: https://github.com/koval-finance/koval-engine/compare/v0.12.2...v0.12.3
 [0.12.2]: https://github.com/koval-finance/koval-engine/compare/v0.12.1...v0.12.2
 [0.12.1]: https://github.com/koval-finance/koval-engine/compare/v0.12.0...v0.12.1
 [0.12.0]: https://github.com/koval-finance/koval-engine/compare/v0.11.1...v0.12.0

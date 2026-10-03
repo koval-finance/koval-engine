@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_serializer, model_validator
 
 
 class _StrictModel(BaseModel):
@@ -161,6 +161,29 @@ class AtrVolatilityParams(_StrictModel):
 
     period: int = Field(14, ge=2)
     min_atr_pct: float = Field(0.5, ge=0)
+    max_atr_pct: float | None = Field(None, gt=0)
+
+    @model_validator(mode="after")
+    def _max_above_min(self) -> AtrVolatilityParams:
+        if self.max_atr_pct is not None and self.max_atr_pct <= self.min_atr_pct:
+            raise ValueError(
+                f"max_atr_pct ({self.max_atr_pct}) must be > min_atr_pct ({self.min_atr_pct})"
+            )
+        return self
+
+    @model_serializer(mode="wrap")
+    def _omit_unset_cap(self, handler):
+        # Hosts store and hash these dumps; an unset cap must keep the pre-cap shape.
+        data = handler(self)
+        if data.get("max_atr_pct") is None:
+            data.pop("max_atr_pct", None)
+        return data
+
+
+class CooldownParams(_StrictModel):
+    """Post-exit entry cooldown, counted in flat bars — `policy.cooldown`."""
+
+    bars: int = Field(..., ge=1)
 
 
 class BbVolatilityParams(_StrictModel):

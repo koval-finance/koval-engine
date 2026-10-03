@@ -12,6 +12,7 @@ from koval.strategy.schemas import (
     BreakevenParams,
     BullishEngulfingParams,
     ChochParams,
+    CooldownParams,
     EmaCrossParams,
     EmaTrendFilterParams,
     EntryParams,
@@ -120,3 +121,64 @@ def test_all_models_emit_json_schema():
     for m in models:
         schema = m.model_json_schema()
         assert "properties" in schema or schema.get("type") == "object"
+
+
+def test_atr_volatility_unset_cap_serializes_exactly_as_before():
+    # Hosts store and hash these dumps; an unset cap must not add a key.
+    for params in (AtrVolatilityParams(), AtrVolatilityParams(max_atr_pct=None)):
+        assert params.max_atr_pct is None
+        assert params.model_dump() == {"period": 14, "min_atr_pct": 0.5}
+        assert params.model_dump(mode="json") == {"period": 14, "min_atr_pct": 0.5}
+        assert params.model_dump_json() == '{"period":14,"min_atr_pct":0.5}'
+
+
+def test_atr_volatility_set_cap_is_serialized_and_round_trips():
+    params = AtrVolatilityParams(min_atr_pct=1, max_atr_pct=4)
+    assert params.model_dump() == {"period": 14, "min_atr_pct": 1.0, "max_atr_pct": 4.0}
+    assert params.model_dump_json() == '{"period":14,"min_atr_pct":1.0,"max_atr_pct":4.0}'
+    assert AtrVolatilityParams(**params.model_dump()) == params
+
+
+def test_atr_volatility_cap_only_uses_a_zero_floor():
+    params = AtrVolatilityParams(min_atr_pct=0, max_atr_pct=2.5)
+    assert (params.min_atr_pct, params.max_atr_pct) == (0.0, 2.5)
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"max_atr_pct": 0},
+        {"max_atr_pct": -1},
+        {"min_atr_pct": 0, "max_atr_pct": 0},
+        {"min_atr_pct": 2, "max_atr_pct": 2},
+        {"min_atr_pct": 2, "max_atr_pct": 1},
+        {"max_atr_pct": 0.5},
+        {"max_atr_pct": 0.4},
+    ],
+)
+def test_atr_volatility_rejects_a_cap_that_is_not_above_zero_and_the_floor(params):
+    with pytest.raises(ValidationError):
+        AtrVolatilityParams(**params)
+
+
+def test_atr_volatility_json_schema_describes_the_optional_cap():
+    schema = AtrVolatilityParams.model_json_schema()
+    assert set(schema["properties"]) == {"period", "min_atr_pct", "max_atr_pct"}
+    assert "required" not in schema
+    cap = schema["properties"]["max_atr_pct"]
+    assert cap["default"] is None
+    assert {"type": "number", "exclusiveMinimum": 0} in cap["anyOf"]
+    assert {"type": "null"} in cap["anyOf"]
+    assert schema["properties"]["min_atr_pct"] == {
+        "default": 0.5,
+        "minimum": 0,
+        "title": "Min Atr Pct",
+        "type": "number",
+    }
+
+
+def test_cooldown_params_require_a_positive_bar_count():
+    assert CooldownParams(bars=3).model_dump() == {"bars": 3}
+    for invalid in ({"bars": 0}, {"bars": -2}, {"bars": 1.5}, {"bars": 1, "extra": 1}, {}):
+        with pytest.raises(ValidationError):
+            CooldownParams(**invalid)

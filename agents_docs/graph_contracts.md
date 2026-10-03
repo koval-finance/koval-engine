@@ -89,8 +89,9 @@ exact helper values, causal prefixes, state transitions and dtype normalization.
 `BarContext.evidence` observes the current evaluation through `DecisionRecorder`.
 It produces version `koval_trade_decision_context_v1`, copied to
 `StepResult.decision_context` and then `TradeSetup.decision_context`. Founder
-RSI/EMA facts, MACD/RSI/EMA/ATR policies and states, native aggregation/scoring,
-and order risk expose actual parameters, scalar values, predicates and results.
+RSI/EMA facts, MACD/RSI/EMA/ATR/cooldown policies and states, native
+aggregation/scoring, and order risk expose actual parameters, scalar values,
+predicates and results.
 Unsupported observations stay `partial` or `unavailable`; an empty context must
 never be presented as a passed condition. No OHLCV arrays are embedded.
 
@@ -128,6 +129,34 @@ and ignore their optional `context` ports. Context scoring records the last
 state of each kind that supplies a scoring key, matching the calculation;
 earlier duplicates and ignored state kinds/statuses are excluded. Temporal
 selection continues to use `retain(...)` for observations saved across bars.
+
+Two policies need more than a single threshold. `policy.atr_volatility` allows a
+bar when `atr != 0`, `close != 0`, `atr_pct >= min_atr_pct` and, when the optional
+`max_atr_pct` is set, `atr_pct <= max_atr_pct`. It blocks with
+`volatility_too_low` or `volatility_too_high`. Its parameters omit `max_atr_pct`
+from `model_dump()` while it is unset, and the evidence values and predicate
+name the cap only when it is set, so graphs saved before the cap keep their
+serialized form. `policy.cooldown` (`bars >= 1`) keeps a flat-bar count in its
+`NodeState`. It blocks with `cooldown_active` while `BarContext.position_size`
+is non-zero and for the first `bars` flat bars afterwards, counting the bar
+whose close first shows the position gone as flat bar 1. It always allows
+before the first position. It relies on the host evaluating the graph on every
+bar, in a position or flat, and it cannot see an entry and exit inside one bar.
+
+`exec.order_constructor` takes an optional `trail_pct` (`> 0`, `< 100`) for a
+native trailing stop. The node itself only tags the order with
+`metadata["trail_pct"]`; the initial stop still comes from `sl_pct`, and size and
+target do not change. While the position is open, `GraphStrategy.on_sl_update`
+calls `trailing_stop_price` with the bar close: a long stop only rises, a short
+stop only falls, and the hook returns `None` when the stop does not move. The
+trail is evaluated once per closed bar, so intrabar highs do not move it. The
+parameters omit `trail_pct` from `model_dump()` while it is unset, and the order
+metadata stays empty, so graphs saved before 0.12.4 keep their serialized form.
+`build_graph_strategy` raises `GraphValidationError` when a graph sets
+`trail_pct` and a legacy `dynamic_exit` callable is also supplied. Legacy
+`exit.trailing_stop` and `exit.breakeven` blocks stay on the GraphStrategy seam
+through `extract_dynamic_exit`; there is no `exec.dynamic_stop` node, no
+activation threshold, and the take-profit stays mandatory.
 
 `koval.strategy.graph.series.strategy_indicator_series` is the public derived
 chart API. It resolves saved graph defaults and uses the node formulas with the

@@ -21,6 +21,13 @@ hardens evidence decoding, fill causality, funding-grid validation and WhiteBIT
 fee conversion without changing the engine protocol or fill profiles.
 The 0.12.2 patch stops a venue hole outside the requested range from failing
 later OHLCV cache reads; holes inside the range still fail closed.
+The 0.12.3 patch adds the `policy.cooldown` node, which blocks re-entry for a
+configured number of bars after a position closes, and an optional `max_atr_pct`
+cap on the ATR volatility policy. Graphs that do not set the cap serialize
+exactly as before.
+The 0.12.4 patch adds an optional `trail_pct` to `exec.order_constructor`, which
+trails the stop behind the bar close on native typed graphs. Graphs that do not
+set it serialize exactly as before.
 See the [runtime and plugin migration contract](https://github.com/koval-finance/koval-engine/blob/main/agents_docs/runtime_contract.md)
 and the [execution realism review](https://github.com/koval-finance/koval-engine/blob/main/agents_docs/realism_review.md).
 

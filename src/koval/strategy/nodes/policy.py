@@ -10,7 +10,7 @@ from typing import Any
 from koval.strategy.graph.domains import Domain
 from koval.strategy.graph.entities import MarketEvent, MarketState, PolicyDecision
 from koval.strategy.graph.evidence import observe
-from koval.strategy.graph.indicators import atr_allowed, ema_trend
+from koval.strategy.graph.indicators import atr_block_reason, ema_trend
 from koval.strategy.graph.node import BarContext, NodeEvaluate, NodeSpec
 from koval.strategy.graph.ports import PortSpec
 from koval.strategy.graph.registry import register_node
@@ -25,6 +25,7 @@ from koval.strategy.schemas import (
     AdxFilterParams,
     AtrVolatilityParams,
     BbVolatilityParams,
+    CooldownParams,
     EmaTrendFilterParams,
     IsDojiFilterParams,
     MacdFilterParams,
@@ -99,6 +100,39 @@ def _macd_observed(ctx, p):
     return allowed
 
 
+def _atr_volatility_factory(p: AtrVolatilityParams) -> NodeEvaluate:
+    def evaluate(ctx, inputs, state):
+        observe(ctx, inputs=())
+        if not _has(ctx.closes, p.period + 1):
+            return {"policy": _decision(ctx, False, "volatility_too_low")}
+        reason = atr_block_reason(ctx, p.period, p.min_atr_pct, p.max_atr_pct)
+        return {"policy": _decision(ctx, reason is None, reason)}
+
+    return evaluate
+
+
+def _cooldown_factory(p: CooldownParams) -> NodeEvaluate:
+    def evaluate(ctx, inputs, state):
+        observe(ctx, inputs=())
+        # flat_bars stays absent until a position has been seen; an exit first
+        # shows up as position_size == 0 at the close of the bar it happened on.
+        if ctx.position_size != 0:
+            state["flat_bars"] = 0
+        elif "flat_bars" in state:
+            state["flat_bars"] += 1
+        flat_bars = state.get("flat_bars")
+        allowed = ctx.position_size == 0 and (flat_bars is None or flat_bars > p.bars)
+        observe(
+            ctx,
+            values={"flat_bars": flat_bars, "bars": p.bars, "position_size": ctx.position_size},
+            predicate="position_size == 0 and (flat_bars is None or flat_bars > bars)",
+            result="passed" if allowed else "failed",
+        )
+        return {"policy": _decision(ctx, allowed, "cooldown_active")}
+
+    return evaluate
+
+
 def _register() -> None:
     register_node(
         NodeSpec(
@@ -152,17 +186,24 @@ def _register() -> None:
         NodeSpec(
             "policy.atr_volatility",
             Domain.POLICY,
-            "ATR Floor",
+            "ATR Volatility Band",
             "",
             AtrVolatilityParams,
             _CONTEXT_IN,
             _POLICY_OUT,
-            _wrap(
-                lambda c, p: (
-                    _has(c.closes, p.period + 1) and atr_allowed(c, p.period, p.min_atr_pct)
-                ),
-                "volatility_too_low",
-            ),
+            _atr_volatility_factory,
+        )
+    )
+    register_node(
+        NodeSpec(
+            "policy.cooldown",
+            Domain.POLICY,
+            "Cooldown",
+            "Blocks entries while a position is open and for `bars` flat bars after it closes.",
+            CooldownParams,
+            _CONTEXT_IN,
+            _POLICY_OUT,
+            _cooldown_factory,
         )
     )
     register_node(

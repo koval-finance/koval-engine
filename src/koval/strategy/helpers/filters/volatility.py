@@ -11,15 +11,18 @@ def atr_volatility_filter(
     closes: np.ndarray,
     period: int = 14,
     min_atr_pct: float = 0.5,
+    max_atr_pct: float | None = None,
 ) -> bool:
-    """True if ATR as a percentage of current close >= min_atr_pct."""
+    """True if ATR as a percentage of current close is >= min_atr_pct and,
+    when a cap is given, <= max_atr_pct."""
     atr = _atr(highs, lows, closes, period)
     if atr == 0.0:
         return False
     current_close = float(closes[-1])
     if current_close == 0.0:
         return False
-    return (atr / current_close) * 100.0 >= min_atr_pct
+    atr_pct = (atr / current_close) * 100.0
+    return atr_pct >= min_atr_pct and (max_atr_pct is None or atr_pct <= max_atr_pct)
 
 
 def bb_volatility_filter(
