@@ -17,7 +17,7 @@ nodes for:
 | STATE | remember things across bars |
 | POLICY | decide whether and how to act |
 | INTERPRETATION | score and explain — the "why" surfaced with a trade |
-| EXECUTION | turn a decision into a `TradeSetup` with risk applied |
+| EXECUTION | construct entry orders with risk or identified position-close requests |
 
 Domains are rank bands, not a strict pipeline: FACT and STATE share a rank,
 so edges between them are legal in either direction (a Liquidity Pool fact
@@ -156,7 +156,94 @@ metadata stays empty, so graphs saved before 0.12.4 keep their serialized form.
 `trail_pct` and a legacy `dynamic_exit` callable is also supplied. Legacy
 `exit.trailing_stop` and `exit.breakeven` blocks stay on the GraphStrategy seam
 through `extract_dynamic_exit`; there is no `exec.dynamic_stop` node, no
-activation threshold, and the take-profit stays mandatory.
+activation threshold. Take-profit remains a bracket by default; explicit
+historical disabling is described below.
+
+## Historical position management
+
+`exec.position_exit` (`Close Position`) is an EXECUTION terminal with empty,
+strict params. Its required input `condition: PolicyDecision` accepts one
+connection; its terminal output `exit: PositionExitRequest` is separate from
+entry `OrderRequest`. It emits only when the consumed decision allows, position
+size is positive, direction is `long`, and `BarContext.position_id` is present.
+False/missing conditions, flat/short positions and missing identity emit `None`.
+The existing `policy.ema_trend` with `direction="bearish"` supplies strict
+`close < ema`; equality or insufficient history permits no exit. The MIT
+terminal accepts any compatible policy; application hosts may restrict authors.
+
+Import `PositionExitRequest` from `koval.strategy.graph.entities`. It inherits
+`bar_index`, `timestamp_ms`, `source_node_id` and adds:
+
+| Field | Contract |
+| --- | --- |
+| `symbol` | Current configured symbol |
+| `position_id: int` | Run-local identity of the current position |
+| `position_side` | Literal `"long"` |
+| `quantity_fraction` | Literal `1.0`; host resolves actual remaining quantity |
+| `order_type` | Literal `"market"` |
+| `reason` | Literal `"signal"` |
+| `decision_context` | Detached decision observations, or `None` without recording |
+
+Only unconsumed terminal outputs populate `StepResult.position_exits`; entry
+orders stay in `StepResult.orders`. Each exit's own context contains only its
+consumed condition and terminal, including EMA/close values and source/timing
+identity. `StepResult.decision_context` and `TradeSetup.decision_context` retain
+selected-entry semantics. No entry snapshot is overwritten. Evidence remains
+`koval_trade_decision_context_v1`.
+
+`BarContext.position_id: int | None = None` preserves old callers.
+`GraphStrategy.on_open_position(trade_id, setup)` assigns identity; the matching
+close hook clears it. A late close callback for a different currently open
+identity is ignored. Hosts synchronize position size/direction before `on_bar`,
+including while open. `DeclarativeStrategy.get_position_exit_request() ->
+PositionExitRequest | None` defaults to `None`. GraphStrategy returns a detached
+copy of the first terminal exit from the cached step, suppressing an intent if
+its position has closed or been replaced. Entry/exit queries and `on_bar` share
+one evaluation per candle. Repeated queries are intents, not acknowledgements:
+the execution host owns pending-close deduplication and fills.
+
+### Optional take-profit
+
+`exec.order_constructor` adds `take_profit_mode: Literal["bracket", "disabled"]`
+with default `"bracket"`, propagated through `OrderRequest` and `TradeSetup`.
+Bracket retains explicit `tp_pct` or RR fallback when `tp_pct=None`. Disabled
+emits a real `target_price=None` / `take_profit=None`; RR does not determine a
+target. Non-null `tp_pct`, request `target_price`, or setup `take_profit`
+conflicts with disabled and fails validation. Initial stop/sizing are unchanged.
+This mode is authored on the native constructor; legacy exit blocks and the
+discrete pricing pipeline retain bracket semantics.
+
+Missing and explicit bracket are omitted from constructor parameter and
+OrderRequest dumps, preserving old JSON, normalized graph/default hashes and
+entry evidence. Disabled is explicit. Adding an explicit field to raw JSON
+changes its raw hash until normalized; no saved graph is rewritten.
+`TradeSetup(take_profit=None)` without disabled keeps the legacy host's RR
+fallback contract. Its new field is appended to preserve positional callers.
+
+### Host requirements
+
+`DeclarativeStrategy.required_execution_capabilities() -> frozenset[str]`
+defaults to empty. GraphStrategy requires `position_exit_v1` for an exit terminal
+and `optional_take_profit_v1` for a disabled constructor. The pure
+`graph_execution_capabilities` in `graph/execution_capabilities.py` derives the
+same set without stepping nodes or changing saved input. MIT
+`negotiate_execution_capabilities` adds graph requirements to explicit
+`EngineRunSpec` requirements. Plugins must call negotiation before execution
+and advertise only implemented features. Protocol versions are unchanged;
+entry execution does not imply either capability.
+
+MIT `LiveEngine` implements neither feature. It rejects required capabilities
+immediately after assembly, before broker construction/access, feed iteration,
+session callbacks or journal records. Injecting a broker does not opt it in.
+Setup validation also rejects disabled TP from a custom strategy. Existing
+bracket graphs remain supported. This is a historical intent contract, not
+live/paper or exchange-sandbox enablement.
+
+The historical host owns next-available-open execution after the decision,
+position identity checks, pending-close lifecycle, partial-fill protection and
+exit evidence attribution. The MIT executor does not simulate fills or certify
+those behaviors. See [runtime requirements](runtime_contract.md) and
+[public usage](../README.md).
 
 `koval.strategy.graph.series.strategy_indicator_series` is the public derived
 chart API. It resolves saved graph defaults and uses the node formulas with the

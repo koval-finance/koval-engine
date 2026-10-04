@@ -28,6 +28,7 @@ _SUPPORTED = {
     "interp.qualification_gate",
     "interp.signal_emitter",
     "exec.order_constructor",
+    "exec.position_exit",
 }
 
 

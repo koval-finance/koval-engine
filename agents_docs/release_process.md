@@ -12,6 +12,16 @@ Agents prepare releases; a human runs every git and tag command.
   release workflow extracts that section and **fails if it is empty**, so
   keep the Unreleased section populated as changes land.
 
+Before finalizing a candidate, check live PyPI release metadata, remote tags
+(`git ls-remote --tags origin`) and the release workflow runs. A source commit
+named "Release", a local tag, or a local artifact is not publication evidence.
+Retain an existing candidate version only while it is unpublished and its
+release tag is unused. Never reuse a PyPI version, including a yanked one. Resolve
+an identity conflict before changing the version or a plugin dependency range.
+Consolidate unpublished candidate notes into the selected release section, with
+a comparison link from the previous public tag, so the extracted notes describe
+every change shipped since that release.
+
 ## The pipeline
 
 Pushing a `v*` tag triggers `.github/workflows/release.yml`, four stages in
@@ -40,6 +50,10 @@ staying installable by path. A sibling checkout that installs
 holds, under a version string that names something else — which is how a
 pre-release engine was once measured as if it were the published release.
 
+When an artifact is retained acceptance evidence, copy it byte-for-byte into
+ignored `.private/` scratch and record its SHA-256 before replacing it. Keep the
+historical copy out of `dist/` and do not use it as published-package evidence.
+
 `scripts/check_dist.py` runs in the default suite against `dist/` and fails when
 an artifact there does not carry the current sources. Delete a stale build
 rather than keeping it; the released artifact is always available from PyPI.
@@ -64,6 +78,17 @@ Build and validate from the final working tree:
 local checks may legitimately report nothing to verify. Rebuild artifacts after
 any subsequent source/fixture change, and never reuse a pre-release wheel as a
 published artifact just because its filename has the release version.
+
+For release preparation, build into a fresh ignored scratch directory and pass
+that directory to `scripts/check_dist.py --require-artifacts`. Validate metadata
+versions as well as package bytes in both artifacts. Install the wheel normally
+in a fresh engine-only virtualenv outside the checkout, run `pip check`, confirm
+the imported package path and all installed package bytes, and exercise the
+public API without `PYTHONPATH` pointing at the source. Repeat with the sdist;
+never install Backtrader into an engine validation environment. Run the available
+Python 3.11/3.12/3.13 gates and report missing runtimes. The tag workflow still
+owns the full remote matrix and rebuilds its own published artifacts; local
+hashes are preparation evidence, not predicted public wheel/sdist hashes.
 
 Binance conditional API acceptance uses the current `algo` default. The offline
 suite validates request/response behavior, but does not replace an authenticated

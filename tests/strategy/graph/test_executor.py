@@ -61,6 +61,55 @@ def _ctx(i):
     )
 
 
+@pytest.mark.parametrize("terminal, consumed", [(False, False), (True, True), (True, False)])
+def test_position_exits_leave_graph_only_on_unconsumed_terminal_ports(
+    monkeypatch, terminal, consumed
+):
+    from dataclasses import replace
+
+    from koval.strategy.graph.registry import get_node
+    from tests.strategy.graph.position_exit_fixtures import context, exit_graph
+
+    original = get_node("exec.position_exit")
+    monkeypatch.setitem(
+        NODE_CATALOG,
+        "exec.position_exit",
+        replace(
+            original,
+            output_ports={
+                "exit": PortSpec("exit", original.output_ports["exit"].accepts, terminal=terminal)
+            },
+        ),
+    )
+    graph = exit_graph()
+    if consumed:
+
+        def sink_factory(params):
+            return lambda ctx, inputs, state: {}
+
+        monkeypatch.setitem(
+            NODE_CATALOG,
+            "test.exit_sink",
+            NodeSpec(
+                "test.exit_sink",
+                Domain.EXECUTION,
+                "Sink",
+                "",
+                _P,
+                {"request": PortSpec("request", original.output_ports["exit"].accepts)},
+                {},
+                sink_factory,
+            ),
+        )
+        graph["blocks"].append({"id": "sink", "type": "test.exit_sink", "params": {}})
+        graph["connections"].append(
+            {"from": "close_long", "from_port": "exit", "to": "sink", "to_port": "request"}
+        )
+    result = GraphExecutor.build(graph).step(context())
+    assert len(result.position_exits) == int(terminal and not consumed)
+    assert result.orders == []
+
+
 def _register_fakes():
     register_node(
         NodeSpec(

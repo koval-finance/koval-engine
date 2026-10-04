@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from koval.strategy.graph.entities import Entity, OrderRequest, TradingIntent
+from koval.strategy.graph.entities import Entity, OrderRequest, PositionExitRequest, TradingIntent
 from koval.strategy.graph.node import BarContext, GraphNode
 from koval.strategy.graph.registry import NODE_CATALOG
 from koval.strategy.graph.state_store import NodeStateStore
@@ -21,6 +21,7 @@ class StepResult:
     intents: list[TradingIntent] = field(default_factory=list)
     orders: list[OrderRequest] = field(default_factory=list)
     decision_context: dict | None = None
+    position_exits: list[PositionExitRequest] = field(default_factory=list)
 
 
 @dataclass
@@ -120,12 +121,20 @@ class GraphExecutor:
                     # A terminal declaration is an explicit execution boundary.
                     # Unconsumed draft/pricing/sizing outputs never leave the graph.
                     result.orders.append(ent)
+                elif (
+                    isinstance(ent, PositionExitRequest)
+                    and node.spec.output_ports[port_name].terminal
+                    and (nid, port_name) not in self._consumed_ports
+                ):
+                    result.position_exits.append(ent)
         if ctx.evidence is not None:
             # GraphStrategy executes the first terminal order. Bind its evidence
             # here so other orders and unrelated evaluated branches cannot leak in.
             result.decision_context = ctx.evidence.snapshot(
                 ctx, result.orders[0] if result.orders else None
             )
+            for request in result.position_exits:
+                request.decision_context = ctx.evidence.snapshot(ctx, request)
         result.entities_by_node = outputs
         return result
 

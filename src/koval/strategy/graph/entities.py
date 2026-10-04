@@ -1,6 +1,6 @@
 """Typed entity contracts carried on dataflow-graph edges.
 
-These eight models are the stable vocabulary for the engine.
+These models are the stable vocabulary for the engine.
 ``confidence``/``score``-like fields live ONLY on INTERPRETATION entities;
 FACT/STATE carry ``strength`` (a measurement), never a probability of success.
 ``extra="forbid"`` makes a stray ``confidence`` on a FACT entity fail loudly.
@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_serializer, model_validator
 
 Direction = Literal["bullish", "bearish", "neutral"]
 Side = Literal["buy", "sell"]
@@ -97,6 +97,36 @@ class OrderRequest(Entity):
     quantity: float
     order_type: str = "limit"
     metadata: dict[str, Any] = {}
+    take_profit_mode: Literal["bracket", "disabled"] = "bracket"
+
+    @model_validator(mode="after")
+    def _validate_take_profit_mode(self):
+        if self.take_profit_mode == "disabled" and self.target_price is not None:
+            raise ValueError("take_profit_mode=disabled conflicts with target_price")
+        return self
+
+    @model_serializer(mode="wrap")
+    def _omit_default_take_profit_mode(self, handler):
+        data = handler(self)
+        if self.take_profit_mode == "bracket":
+            data.pop("take_profit_mode", None)
+        return data
+
+
+class PositionExitRequest(Entity):
+    """EXECUTION — full market close of one identified current long.
+
+    The host resolves the actual remaining quantity at execution. Decision
+    evidence travels separately from the position's original entry evidence.
+    """
+
+    symbol: str
+    position_id: int
+    position_side: Literal["long"] = "long"
+    quantity_fraction: Literal[1.0] = 1.0
+    order_type: Literal["market"] = "market"
+    reason: Literal["signal"] = "signal"
+    decision_context: dict[str, Any] | None = None
 
 
 class OrderExecution(Entity):

@@ -229,6 +229,8 @@ def _validate_live_config(config: LiveEngineConfig) -> None:
 
 
 def _validate_live_setup(setup: TradeSetup, *, expected_direction: str) -> None:
+    if getattr(setup, "take_profit_mode", "bracket") == "disabled":
+        raise ValueError("live engine does not support optional_take_profit_v1")
     if setup.direction != expected_direction:
         raise ValueError("invalid live trade setup: direction does not match the strategy signal")
     if setup.entry_type not in {"market", "limit", "stop"}:
@@ -341,6 +343,14 @@ class LiveEngine:
             )
         _validate_live_config(config)
         self._strategy = assemble_from_graph(graph)
+        required = getattr(self._strategy, "required_execution_capabilities", lambda: frozenset())()
+        # Entry execution does not imply support for historical position management.
+        # Neither paper nor sandbox has implemented these lifecycle contracts.
+        if required:
+            raise ValueError(
+                "live engine does not support execution capabilities: "
+                + ", ".join(sorted(required))
+            )
         self._strategy.config = {"symbol": config.symbol}
         self._config = config
         self._terminal_policy: str | None = None

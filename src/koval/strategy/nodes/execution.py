@@ -13,10 +13,15 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import Field, model_serializer
+from pydantic import Field, model_serializer, model_validator
 
 from koval.strategy.graph.domains import Domain
-from koval.strategy.graph.entities import OrderRequest, TradingIntent
+from koval.strategy.graph.entities import (
+    OrderRequest,
+    PolicyDecision,
+    PositionExitRequest,
+    TradingIntent,
+)
 from koval.strategy.graph.evidence import RiskEvidence, observe
 from koval.strategy.graph.node import NodeEvaluate, NodeSpec
 from koval.strategy.graph.ports import PortSpec
@@ -36,6 +41,13 @@ class OrderConstructorParams(_StrictModel):
     leverage: float = Field(1.0, gt=0)
     entry_type: Literal["market", "limit", "stop"] = "market"
     trail_pct: float | None = Field(None, gt=0, lt=100)
+    take_profit_mode: Literal["bracket", "disabled"] = "bracket"
+
+    @model_validator(mode="after")
+    def _validate_take_profit_mode(self):
+        if self.take_profit_mode == "disabled" and self.tp_pct is not None:
+            raise ValueError("take_profit_mode=disabled conflicts with tp_pct")
+        return self
 
     @model_serializer(mode="wrap")
     def _omit_unset_trail(self, handler):
@@ -43,6 +55,8 @@ class OrderConstructorParams(_StrictModel):
         data = handler(self)
         if data.get("trail_pct") is None:
             data.pop("trail_pct", None)
+        if self.take_profit_mode == "bracket":
+            data.pop("take_profit_mode", None)
         return data
 
 
@@ -61,6 +75,8 @@ def _order_constructor_factory(p: OrderConstructorParams) -> NodeEvaluate:
             risk_reward=p.risk_reward,
             tp_pct=p.tp_pct,
         )
+        if p.take_profit_mode == "disabled":
+            tp = None
         qty = calculate_position_size(
             account_value=float(ctx.account_value),
             risk_per_trade_pct=p.risk_pct,
@@ -94,6 +110,7 @@ def _order_constructor_factory(p: OrderConstructorParams) -> NodeEvaluate:
                 entry_price=entry,
                 stop_price=sl,
                 target_price=tp,
+                take_profit_mode=p.take_profit_mode,
                 quantity=qty,
                 order_type=p.entry_type,
                 metadata={} if p.trail_pct is None else {"trail_pct": p.trail_pct},
@@ -103,7 +120,62 @@ def _order_constructor_factory(p: OrderConstructorParams) -> NodeEvaluate:
     return evaluate
 
 
+class PositionExitParams(_StrictModel):
+    """Full long close is fixed, with no quantity or direction tuning."""
+
+
+def _position_exit_factory(p: PositionExitParams) -> NodeEvaluate:
+    def evaluate(ctx, inputs, state):
+        conditions = inputs.get("condition", [])
+        condition = conditions[0] if conditions else None
+        allowed = bool(
+            condition is not None
+            and condition.allowed
+            and ctx.position_size > 0
+            and ctx.position_direction == "long"
+            and ctx.position_id is not None
+        )
+        observe(
+            ctx,
+            inputs=[] if condition is None else [condition],
+            values={
+                "condition_allowed": None if condition is None else condition.allowed,
+                "position_id": ctx.position_id,
+                "position_size": ctx.position_size,
+                "position_direction": ctx.position_direction,
+            },
+            predicate="condition.allowed and position_size > 0 and "
+            "position_direction == long and position_id is not None",
+            result="passed" if allowed else "failed",
+        )
+        return {
+            "exit": PositionExitRequest(
+                bar_index=ctx.bar_index,
+                timestamp_ms=ctx.timestamp_ms,
+                source_node_id="position_exit",
+                symbol=ctx.symbol,
+                position_id=ctx.position_id,
+            )
+            if allowed
+            else None
+        }
+
+    return evaluate
+
+
 def _register() -> None:
+    register_node(
+        NodeSpec(
+            "exec.position_exit",
+            Domain.EXECUTION,
+            "Close Position",
+            "PolicyDecision -> full market close of the identified current long (historical only).",
+            PositionExitParams,
+            {"condition": PortSpec("condition", (PolicyDecision,))},
+            {"exit": PortSpec("exit", (PositionExitRequest,), terminal=True)},
+            _position_exit_factory,
+        )
+    )
     register_node(
         NodeSpec(
             "exec.order_constructor",

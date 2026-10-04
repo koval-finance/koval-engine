@@ -14,6 +14,37 @@ from koval.strategy.graph.node import BarContext
 from koval.strategy.graph.strategy import build_graph_strategy
 
 
+def test_exit_hook_returns_detached_evidence_with_original_policy_source_ids():
+    from koval.strategy.base.trade_setup import TradeSetup
+    from tests.strategy.graph.position_exit_fixtures import context as exit_context
+    from tests.strategy.graph.position_exit_fixtures import exit_graph
+
+    graph = exit_graph()
+    graph["blocks"][0]["source_node_ids"] = ["saved_ema_rule"]
+    strategy = build_graph_strategy(graph)()
+    strategy.on_open_position(42, TradeSetup("long", 10, 9, 12, 2))
+    ctx = exit_context()
+    for key in (
+        "close",
+        "closes",
+        "bar_index",
+        "timestamp_ms",
+        "position_size",
+        "position_direction",
+    ):
+        setattr(strategy, key, getattr(ctx, key))
+    first = strategy.get_position_exit_request()
+    policy = next(
+        n for n in first.decision_context["nodes"] if n["node_type"] == "policy.ema_trend"
+    )
+    assert policy["source_node_ids"] == ["saved_ema_rule"]
+    assert policy["timestamp_ms"] == 7000
+    snapshot = deepcopy(first.decision_context)
+    first.decision_context["nodes"].clear()
+    assert strategy.get_position_exit_request().decision_context == snapshot
+    json.dumps(snapshot, allow_nan=False)
+
+
 def graph():
     blocks = [
         {"id": "sig", "type": "signal.rsi_cross", "params": {"period": 14, "level": 50}},

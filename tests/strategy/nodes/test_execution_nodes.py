@@ -1,3 +1,6 @@
+import pytest
+from pydantic import ValidationError
+
 import koval.strategy.nodes  # noqa: F401
 from koval.strategy.graph.entities import OrderRequest, TradingIntent
 from koval.strategy.graph.node import BarContext
@@ -36,6 +39,46 @@ def test_order_constructor_no_intent_no_order():
     ev = spec.factory(spec.params_schema(sl_pct=2.0, risk_reward=2.0, risk_pct=1.0, leverage=1.0))
     out = ev(_ctx(), {"intent": []}, {})
     assert out["order"] is None
+
+
+@pytest.mark.parametrize("mode, target", [("bracket", 104.0), ("disabled", None)])
+def test_take_profit_mode_controls_rr_fallback_without_changing_stop_or_size(mode, target):
+    spec = get_node("exec.order_constructor")
+    params = spec.params_schema(take_profit_mode=mode, tp_pct=None)
+    intent = TradingIntent(bar_index=0, timestamp_ms=0, source_node_id="gate", side="buy")
+    order = spec.factory(params)(_ctx(), {"intent": [intent]}, {})["order"]
+    assert order.target_price == target
+    assert order.take_profit_mode == mode
+    assert order.stop_price == 98
+    assert order.quantity == 50
+
+
+@pytest.mark.parametrize("mode", ["disabled", "invalid"])
+def test_take_profit_mode_rejects_conflicting_tp_or_unknown_mode(mode):
+    with pytest.raises(ValidationError):
+        get_node("exec.order_constructor").params_schema(take_profit_mode=mode, tp_pct=5)
+
+
+@pytest.mark.parametrize("allowed", [False, True])
+def test_position_exit_consumes_policy_and_never_uses_entry_sizing(allowed):
+    from koval.strategy.graph.entities import PolicyDecision, PositionExitRequest
+
+    ctx = _ctx()
+    ctx.position_id = 7
+    ctx.position_size = 0.25
+    ctx.position_direction = "long"
+    ctx.symbol = "ETHUSDT"
+    spec = get_node("exec.position_exit")
+    evaluate = spec.factory(spec.params_schema())
+    decision = PolicyDecision(bar_index=0, timestamp_ms=0, source_node_id="ema", allowed=allowed)
+    request = evaluate(ctx, {"condition": [decision]}, {})["exit"]
+    if allowed:
+        assert isinstance(request, PositionExitRequest)
+        assert request.quantity_fraction == 1.0
+        assert request.position_id == 7
+    else:
+        assert request is None
+    assert evaluate(ctx, {"condition": []}, {})["exit"] is None
 
 
 def test_order_pricing_fixed_percent_long():

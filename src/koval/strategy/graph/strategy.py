@@ -10,7 +10,9 @@ from koval.engine.account_state import PlatformAccountState
 from koval.strategy.base.declarative import DeclarativeStrategy
 from koval.strategy.base.trade_setup import TradeSetup
 from koval.strategy.block_assembler import GraphValidationError
+from koval.strategy.graph.entities import PositionExitRequest
 from koval.strategy.graph.evidence import DecisionRecorder
+from koval.strategy.graph.execution_capabilities import graph_execution_capabilities
 from koval.strategy.graph.executor import GraphExecutor, StepResult
 from koval.strategy.graph.indicators import PreparedIndicators
 from koval.strategy.graph.node import BarContext
@@ -33,12 +35,14 @@ def build_graph_strategy(
         def __init__(self) -> None:
             super().__init__()
             self._executor = GraphExecutor.build(typed_graph)
+            self._required_capabilities = graph_execution_capabilities(typed_graph)
             self._stepped_bar = -1
             self._result: StepResult | None = None
             # Dynamic-exit (trailing / breakeven) is carried here for the compat
             # path: the legacy callable + the live bracket drive on_sl_update.
             self._dyn_exit = dynamic_exit_fn
             self._open_trade_setup: TradeSetup | None = None
+            self._open_position_id: int | None = None
             self._open_current_stop: float = 0.0
             # Platform Account State: per-run, parallel-safe. Seeded from the
             # first bar's equity; fed by on_bar + position hooks.
@@ -80,6 +84,7 @@ def build_graph_strategy(
                 account_value=self.account_value,
                 position_size=self.position_size,
                 position_direction=self.position_direction,
+                position_id=self._open_position_id,
                 symbol=str(self.config.get("symbol", "")),
                 account=account,
                 evidence=DecisionRecorder(),
@@ -118,6 +123,21 @@ def build_graph_strategy(
             """Synchronize account state and evaluate the graph once per bar."""
             self._ensure_stepped()
 
+        def required_execution_capabilities(self) -> frozenset[str]:
+            return self._required_capabilities
+
+        def get_position_exit_request(self) -> PositionExitRequest | None:
+            requests = self._ensure_stepped().position_exits
+            if (
+                not requests
+                or self.position_size <= 0
+                or self.position_direction != "long"
+                or self._open_position_id is None
+                or requests[0].position_id != self._open_position_id
+            ):
+                return None
+            return requests[0].model_copy(deep=True)
+
         def _setup(self, direction: str) -> TradeSetup:
             result = self._ensure_stepped()
             orders = result.orders
@@ -145,6 +165,7 @@ def build_graph_strategy(
                 entry_price=o.entry_price,
                 stop_loss=o.stop_price,
                 take_profit=o.target_price,
+                take_profit_mode=o.take_profit_mode,
                 size=o.quantity,
                 entry_type=o.order_type,
                 why_entry=[reasoning] if reasoning else observed_reasons,
@@ -166,6 +187,7 @@ def build_graph_strategy(
             return self._setup("short")
 
         def on_open_position(self, trade_id: int, setup: TradeSetup) -> None:
+            self._open_position_id = trade_id
             self._open_trade_setup = setup
             self._open_current_stop = setup.stop_loss
             if self.account_snapshot() is not None:
@@ -179,6 +201,9 @@ def build_graph_strategy(
             )
 
         def on_close_position(self, trade_id: int, result: dict) -> None:
+            if self._open_position_id is not None and self._open_position_id != trade_id:
+                return
+            self._open_position_id = None
             self._open_trade_setup = None
             self._open_current_stop = 0.0
             if self.account_snapshot() is None:

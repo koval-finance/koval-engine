@@ -129,6 +129,12 @@ def test_on_tp_update_default_none():
     assert s.on_tp_update(1) is None
 
 
+def test_legacy_strategy_requires_no_new_execution_capabilities_or_position_exit():
+    strategy = _AlwaysLong()
+    assert strategy.required_execution_capabilities() == frozenset()
+    assert strategy.get_position_exit_request() is None
+
+
 def test_metadata_returns_dict_with_required_keys():
     meta = _AlwaysLong.metadata()
     assert isinstance(meta, dict)

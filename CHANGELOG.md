@@ -6,9 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
-## [0.12.4] - 2026-10-03
+## [0.12.4] - 2026-10-04
+
+This release includes the previously unpublished 0.12.3 and 0.12.4 candidate
+changes. The previous public release is 0.12.2.
 
 ### Added
+
+- Historical `exec.position_exit` terminal with one `condition` policy input and
+  separate `PositionExitRequest` output on `exit`. It requests a full market
+  close of the identified current long, preserving exit evidence independently
+  of entry. Position identity and default exit/capability strategy hooks preserve
+  old callers. GraphStrategy shares one cached evaluation per candle.
+- Explicit `take_profit_mode=bracket|disabled` on the native order constructor,
+  `OrderRequest` and `TradeSetup`. Disabled emits no target and rejects a
+  conflicting TP. Missing/default bracket keeps RR fallback and is omitted from
+  parameter/order dumps to preserve legacy serialized graphs and hashes.
+- Graph-derived `position_exit_v1` / `optional_take_profit_v1` requirements in
+  historical negotiation. MIT LiveEngine rejects both before feed, broker or
+  session effects. Historical plugin execution is required separately; this
+  does not enable live paper or sandbox position management.
 
 - `exec.order_constructor` accepts an optional `trail_pct` (`> 0` and `< 100`).
   When it is set on a native typed graph, `GraphStrategy.on_sl_update` trails the
@@ -18,14 +35,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   size and the take-profit are unchanged. The order carries the value in
   `OrderRequest.metadata["trail_pct"]`, and decision evidence records it in the
   node's params. With `trail_pct` unset, serialized parameters, order metadata
-  and evidence are identical to 0.12.3, so saved graphs keep their hashes.
+  and evidence are unchanged, so saved graphs keep their hashes.
 - A graph that sets `trail_pct` and also carries a legacy `dynamic_exit` block
   is rejected with `GraphValidationError`. Legacy `exit.trailing_stop` and
   `exit.breakeven` graphs and `compile_legacy` behave as before.
-
-## [0.12.3] - 2026-10-03
-
-### Added
 
 - `policy.cooldown` node (`bars >= 1`): blocks entries while a position is open
   and for `bars` flat bars after it closes, with reason `cooldown_active`. The
@@ -46,6 +59,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - The `policy.atr_volatility` display name is now `ATR Volatility Band`
   (previously `ATR Floor`).
+
+### Compatibility and limits
+
+- `ENGINE_PROTOCOL_VERSION` remains 2, and protocol 1 remains accepted without
+  explicit runtime boundaries. Existing fill profiles, execution modes and the
+  six runtime dependencies are unchanged.
+- Position exits and disabled take-profit require a separately distributed
+  historical plugin that implements the negotiated capabilities. This engine
+  release does not establish adapter publication, app adoption, historical
+  performance, or paper/sandbox support for either feature.
 
 ## [0.12.2] - 2026-09-26
 
@@ -389,8 +412,7 @@ First public release.
 - Releases are published to PyPI through Trusted Publishing (OIDC) with PEP 740 attestations. No long-lived PyPI credential is used in CI.
 
 [Unreleased]: https://github.com/koval-finance/koval-engine/compare/v0.12.4...HEAD
-[0.12.4]: https://github.com/koval-finance/koval-engine/compare/v0.12.3...v0.12.4
-[0.12.3]: https://github.com/koval-finance/koval-engine/compare/v0.12.2...v0.12.3
+[0.12.4]: https://github.com/koval-finance/koval-engine/compare/v0.12.2...v0.12.4
 [0.12.2]: https://github.com/koval-finance/koval-engine/compare/v0.12.1...v0.12.2
 [0.12.1]: https://github.com/koval-finance/koval-engine/compare/v0.12.0...v0.12.1
 [0.12.0]: https://github.com/koval-finance/koval-engine/compare/v0.11.1...v0.12.0

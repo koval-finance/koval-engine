@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 import koval.strategy.nodes  # noqa: F401
 from koval.strategy.base.declarative import DeclarativeStrategy
@@ -51,6 +52,20 @@ def test_graph_strategy_goes_long_on_golden_cross():
     assert isinstance(setup, TradeSetup)
     assert setup.direction == "long"
     assert setup.stop_loss < setup.entry_price
+
+
+@pytest.mark.parametrize("mode, target", [(None, 104.0), ("bracket", 104.0), ("disabled", None)])
+def test_graph_strategy_passes_explicit_tp_mode_to_trade_setup(mode, target):
+    from tests.strategy.graph.position_exit_fixtures import entry_graph
+
+    strategy = assemble_from_graph(entry_graph(mode))
+    _inject(strategy, [100])
+    setup = strategy.go_long()
+    assert setup.take_profit == target
+    assert setup.take_profit_mode == (mode or "bracket")
+    assert setup.stop_loss == 98
+    assert setup.size == 50
+    assert setup.decision_context["risk"]["take_profit"] == target
 
 
 def test_graph_strategy_injects_account_snapshot_into_context():

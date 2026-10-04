@@ -21,13 +21,16 @@ hardens evidence decoding, fill causality, funding-grid validation and WhiteBIT
 fee conversion without changing the engine protocol or fill profiles.
 The 0.12.2 patch stops a venue hole outside the requested range from failing
 later OHLCV cache reads; holes inside the range still fail closed.
-The 0.12.3 patch adds the `policy.cooldown` node, which blocks re-entry for a
+The 0.12.4 release adds the `policy.cooldown` node, which blocks re-entry for a
 configured number of bars after a position closes, and an optional `max_atr_pct`
 cap on the ATR volatility policy. Graphs that do not set the cap serialize
 exactly as before.
-The 0.12.4 patch adds an optional `trail_pct` to `exec.order_constructor`, which
+It adds an optional `trail_pct` to `exec.order_constructor`, which
 trails the stop behind the bar close on native typed graphs. Graphs that do not
-set it serialize exactly as before.
+set it serialize exactly as before. It also provides a historical position-exit
+intent and explicit disabled take-profit, guarded by plugin capabilities.
+The engine protocol remains 2; MIT paper and sandbox execution remain
+bracket-only. These changes include the earlier unpublished 0.12.3 candidate.
 See the [runtime and plugin migration contract](https://github.com/koval-finance/koval-engine/blob/main/agents_docs/runtime_contract.md)
 and the [execution realism review](https://github.com/koval-finance/koval-engine/blob/main/agents_docs/realism_review.md).
 
@@ -57,6 +60,92 @@ koval backtest koval-examples/graphs/ema_cross_trend.json --data koval-examples/
 
 The same run through the Python API is in [`examples/run_backtest.py`](https://github.com/koval-finance/koval-engine/blob/main/examples/run_backtest.py).
 
+## Historical position exits and optional targets
+
+The 0.12.4 API provides historical-only position management. A compatible
+backtest plugin must implement and advertise `position_exit_v1` and/or
+`optional_take_profit_v1`. MIT LiveEngine rejects graphs requiring either
+feature before opening execution resources; paper/sandbox support is not enabled.
+
+This minimal exit branch uses the existing strict bearish EMA policy:
+
+```json
+{
+  "blocks": [
+    {"id": "ema_exit", "type": "policy.ema_trend", "params": {"period": 50, "direction": "bearish"}},
+    {"id": "close_long", "type": "exec.position_exit", "params": {}}
+  ],
+  "connections": [
+    {"from": "ema_exit", "from_port": "policy", "to": "close_long", "to_port": "condition"}
+  ]
+}
+```
+
+Add this branch beside a native entry graph. The terminal's output port is
+`exit`. Only an identified current long with `close < EMA` emits a request;
+equality or insufficient history emits none. The host calls existing
+`on_open_position(trade_id, setup)` / `on_close_position(trade_id, result)` hooks,
+injects size/direction, and calls `on_bar()` while open.
+`get_position_exit_request()` reads the cached evaluation without stepping again.
+The separate request is:
+
+```python
+from koval.strategy.graph.entities import PositionExitRequest
+
+request = PositionExitRequest(
+    bar_index=100,
+    timestamp_ms=1_800_000_000_000,
+    source_node_id="close_long",
+    symbol="ETHUSDT",
+    position_id=7,
+    position_side="long",
+    quantity_fraction=1.0,
+    order_type="market",
+    reason="signal",
+    decision_context=None,  # Actual observations are supplied when recorded.
+)
+```
+
+The actual quantity is position 7's remaining inventory, resolved by the host.
+`StepResult.position_exits` is independent of entry orders. Exit evidence
+preserves consumed EMA/close values, source IDs and clocks independently of
+original entry evidence. The host owns pending-close deduplication and
+next-open execution; a request is not a fill.
+
+To disable a native constructor's target, use these parameters:
+
+```json
+{"sl_pct": 2.0, "risk_reward": 2.0, "tp_pct": null, "risk_pct": 1.0, "leverage": 1.0, "entry_type": "market", "take_profit_mode": "disabled"}
+```
+
+With close 100 and account value 10,000, the long `OrderRequest` has stop 98,
+quantity 50, `target_price=None` and `take_profit_mode="disabled"`.
+GraphStrategy passes the same mode to:
+
+```python
+from koval.strategy.base.trade_setup import TradeSetup
+
+setup = TradeSetup(
+    direction="long",
+    entry_price=100,
+    stop_loss=98,
+    take_profit=None,
+    size=50,
+    entry_type="market",
+    take_profit_mode="disabled",
+)
+```
+
+Non-null TP conflicts with disabled and fails validation. Missing/default
+`bracket` retains explicit TP or RR fallback (target 104 here);
+`tp_pct=null` alone does not disable it. Default bracket is omitted from
+parameter/order dumps, preserving old saved graphs and normalized hashes.
+`required_execution_capabilities()` returns a `frozenset` of graph requirements,
+empty for legacy strategies. MIT negotiation derives requirements even without
+explicit run flags. See [graph contracts](https://github.com/koval-finance/koval-engine/blob/main/agents_docs/graph_contracts.md)
+for schemas and host requirements. Plugin adoption and published package
+availability must be verified separately.
+
 ## Why this engine is open source
 
 A backtest result is a claim about money. When the engine that produced it is closed, the reader is asked to trust the number without being able to check how it was computed — what filled, at what price, on which bar, with what fees. Publishing the engine turns that claim into something a skeptic can audit.
@@ -69,7 +158,7 @@ Finally, keeping the engine separate from the hosted product keeps the open vers
 
 ## What it does
 
-- **Strategies as graphs.** A strategy is a JSON graph of typed nodes, not a subclass. 26 blocks in the compatibility catalogue compile onto 35 typed nodes across the FACT / STATE / POLICY / INTERPRETATION / EXECUTION domains.
+- **Strategies as graphs.** A strategy is a JSON graph of typed nodes, not a subclass. 26 blocks in the compatibility catalogue compile onto 37 typed nodes across the FACT / STATE / POLICY / INTERPRETATION / EXECUTION domains.
 - **Validated dataflow execution.** Graph structure, port compatibility, and emitted entity types are checked at their execution boundaries.
 - **Backtesting** through a pluggable engine protocol.
 - **Paper trading** against a simulated broker with a documented fill ruleset.

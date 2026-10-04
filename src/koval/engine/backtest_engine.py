@@ -19,6 +19,7 @@ from koval.engine.run_boundaries import (
     RUNTIME_BOUNDARIES_CAPABILITY,
     resolve_runtime_boundaries,
 )
+from koval.strategy.graph.execution_capabilities import graph_execution_capabilities
 
 _ENTRY_POINT_GROUP = "koval.backtest_engines"
 _DEFAULT_ENGINE_NAME = "backtrader"
@@ -109,7 +110,14 @@ def negotiate_execution_capabilities(
         raise ProtocolVersionError(
             f"execution contract v{requested_version} is not offered by the engine"
         )
-    required = tuple(dict.fromkeys(spec.required_execution_capabilities))
+    required = tuple(
+        dict.fromkeys(
+            (
+                *spec.required_execution_capabilities,
+                *sorted(graph_execution_capabilities(spec.graph)),
+            )
+        )
+    )
     if boundaries is not None:
         required = tuple(dict.fromkeys((*required, RUNTIME_BOUNDARIES_CAPABILITY)))
     missing = sorted(set(required) - set(offered.features))

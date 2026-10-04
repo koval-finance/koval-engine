@@ -16,7 +16,7 @@ class PortSpec:
     # Input ports accept one incoming edge unless they explicitly declare
     # fan-in with ``None``. Ignored for output ports.
     max_connections: int | None = 1
-    # Only an unconsumed OrderRequest on a terminal output may leave the graph.
+    # Only unconsumed entry/position-exit requests on terminal outputs leave the graph.
     terminal: bool = False
 
 

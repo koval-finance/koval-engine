@@ -197,3 +197,17 @@ def test_trade_setup_why_entry_list_is_independent():
     b = TradeSetup(direction="long", entry_price=100.0, stop_loss=95.0)
     a.why_entry.append("signal")
     assert b.why_entry == []
+
+
+def test_take_profit_mode_preserves_legacy_none_and_rejects_disabled_target():
+    import pytest
+
+    from koval.strategy.base.trade_setup import TradeSetup
+
+    assert TradeSetup("long", 100, 98).take_profit_mode == "bracket"
+    disabled = TradeSetup("long", 100, 98, take_profit_mode="disabled")
+    assert disabled.take_profit is None
+    with pytest.raises(ValueError, match="take_profit_mode"):
+        TradeSetup("long", 100, 98, 104, take_profit_mode="disabled")
+    with pytest.raises(ValueError, match="take_profit_mode"):
+        TradeSetup("long", 100, 98, take_profit_mode="unknown")

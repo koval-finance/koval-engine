@@ -41,6 +41,23 @@ contract is present. An older plugin must refuse it; importing the dataclass is
 not implementation. Plugins must validate timeframe alignment and actual input
 coverage and independently reproduce the public fixture before advertising it.
 
+Native graphs with `exec.position_exit` additionally require `position_exit_v1`;
+`exec.order_constructor.take_profit_mode="disabled"` requires
+`optional_take_profit_v1`. Negotiation derives these even when a caller omits
+explicit flags. A plugin must advertise and implement each feature before
+accepting a run. GraphStrategy exposes the same requirements with
+`required_execution_capabilities()` and a separate `PositionExitRequest` with
+`get_position_exit_request()` after the cached step. Existing position hooks
+assign identity. The request's `decision_context` preserves exit evidence
+independently of entry. See [graph contracts](graph_contracts.md) for ports.
+
+MIT LiveEngine refuses both features before broker access, feed iteration or
+session/journal effects. Paper and sandbox execution remain bracket-only.
+Historical plugins own next-eligible-open execution after the closed-bar
+decision, identity/deduplication checks, actual remainder sizing and shared
+fill/protection accounting. Graph support alone provides no fills,
+OCO/partial-fill guarantees, or live capability.
+
 ## Input and execution archive boundary
 
 `LiveEngine(on_record=sink)` calls a synchronous host-owned sink separately from

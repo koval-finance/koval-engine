@@ -42,6 +42,13 @@ class TradeSetup:
     tp_calc_expr: str | None = None
     annotations: list[ChartAnnotation] = field(default_factory=list)
     decision_context: dict[str, Any] | None = None
+    take_profit_mode: Literal["bracket", "disabled"] = "bracket"
+
+    def __post_init__(self) -> None:
+        if self.take_profit_mode not in {"bracket", "disabled"}:
+            raise ValueError("unsupported take_profit_mode")
+        if self.take_profit_mode == "disabled" and self.take_profit is not None:
+            raise ValueError("take_profit_mode=disabled conflicts with take_profit")
 
 
 @dataclass(frozen=True)

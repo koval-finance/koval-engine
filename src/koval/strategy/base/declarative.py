@@ -9,6 +9,7 @@ if TYPE_CHECKING:
     import numpy as np
 
     from koval.engine.account_state import AccountSnapshot
+    from koval.strategy.graph.entities import PositionExitRequest
 
 
 class DeclarativeStrategy:
@@ -95,6 +96,14 @@ class DeclarativeStrategy:
 
     def on_open_position(self, trade_id: int, setup: TradeSetup) -> None:
         pass
+
+    def get_position_exit_request(self) -> PositionExitRequest | None:
+        """Return a historical close intent; legacy strategies emit none."""
+        return None
+
+    def required_execution_capabilities(self) -> frozenset[str]:
+        """Features the host must support before creating any execution resources."""
+        return frozenset()
 
     def on_close_position(self, trade_id: int, result: dict) -> None:
         pass
