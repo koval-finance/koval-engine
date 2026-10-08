@@ -114,6 +114,23 @@ account before execution; plugins bind their independently maintained account.
 Graph contexts prefer this provider and do not book requested setup callbacks
 into a second account. Standalone graphs retain the previous fallback.
 
+`PlatformAccountState(..., market="spot")` reports unspent quote cash in
+`free_margin`. Under the ledger convention, `balance` is initial capital plus
+realized PnL minus paid fees, and Spot `margin_used` is the entry cost of held
+base inventory. Spot cash is therefore `balance - margin_used`; equity remains
+`balance + unrealized_pnl`. An open mark changes equity and drawdown without
+changing quote cash. LiveEngine supplies its canonical market to the bound
+account. Spot paper affordability uses that cash plus the existing fill-cost
+and fee checks. Sizing, long-only 1× rules, partial fills and protection remain
+unchanged.
+
+`PlatformAccountState.reconcile()` and `PaperBroker.reconcile_ledger()` pass
+their market to `AccountLedger.reconcile(..., market=...)`, preserving the
+same cash equation in reports. Direct account and ledger-reconciliation callers
+default to `market="future"`; Futures availability remains
+`equity - margin_used`. These changes do not turn archived progress into an
+exposure-restoration token or enable new live execution capabilities.
+
 Before each `on_bar`, the runtime processes funding and fills, updates account
 quantities/margin, marks remaining exposure at the candle close, and injects
 state. `on_open_position` receives a copy of the setup with actual fill price,

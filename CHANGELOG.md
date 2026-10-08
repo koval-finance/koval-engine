@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- Spot paper account availability and entry affordability now use unspent
+  quote cash (`balance - margin_used`), so unrealized base-asset PnL changes
+  equity without changing purchase capacity. Affordable carried entry
+  remainders no longer fail because of an unrealized loss; unrealized gains
+  cannot fund purchases beyond quote cash.
+- `PlatformAccountState` accepts a canonicalized `market` keyword, supplied
+  by LiveEngine. Its snapshots and reconciliation, PaperBroker reconciliation,
+  and `AccountLedger.reconcile(market=...)` use the same Spot cash convention.
+  The omitted market retains Futures behavior (`equity - margin_used`).
+
 ## [0.12.4] - 2026-10-04
 
 This release includes the previously unpublished 0.12.3 and 0.12.4 candidate

@@ -13,6 +13,7 @@ import math
 from dataclasses import dataclass, replace
 
 from koval.engine.account_ledger import AccountLedger, LedgerReconciliation
+from koval.exchanges.markets import canonical_market
 
 _MS_PER_DAY = 86_400_000
 
@@ -46,6 +47,13 @@ class AccountSnapshot:
 
 
 class PlatformAccountState:
+    """Ledger-backed account; Spot availability excludes unrealized base PnL.
+
+    ``market`` defaults to futures for existing callers. In Spot, ``margin``
+    is the entry cost of held base inventory, so quote cash is balance minus
+    margin used. Equity still includes the marked unrealized PnL.
+    """
+
     def __init__(
         self,
         starting_balance: float = 0.0,
@@ -53,8 +61,10 @@ class PlatformAccountState:
         daily_baseline_equity: float | None = None,
         peak_equity: float | None = None,
         ledger: AccountLedger | None = None,
+        market: str = "future",
     ) -> None:
         bal = float(starting_balance)
+        self._market = canonical_market(market)
         self._starting = bal
         if ledger is not None and ledger.starting_balance != bal:
             raise ValueError("account and broker ledger starting balances must match")
@@ -241,7 +251,7 @@ class PlatformAccountState:
         return AccountSnapshot(
             balance=balance,
             equity=self._equity,
-            free_margin=self._equity - self._margin_used,
+            free_margin=(balance if self._market == "spot" else self._equity) - self._margin_used,
             margin_used=self._margin_used,
             unrealized_pnl=self._equity - balance,
             realized_pnl=balance - self._starting,
@@ -262,4 +272,5 @@ class PlatformAccountState:
             unrealized_pnl=snapshot.unrealized_pnl,
             equity=snapshot.equity,
             margin_used=snapshot.margin_used,
+            market=self._market,
         )

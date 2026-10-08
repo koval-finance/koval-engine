@@ -6,6 +6,8 @@ import math
 from dataclasses import dataclass, field
 from typing import Literal
 
+from koval.exchanges.markets import canonical_market
+
 LedgerKind = Literal["commission", "funding", "trade_pnl", "liquidation_fee", "adjustment"]
 
 
@@ -98,8 +100,10 @@ class AccountLedger:
         return entry
 
     def reconcile(
-        self, *, unrealized_pnl: float, equity: float, margin_used: float
+        self, *, unrealized_pnl: float, equity: float, margin_used: float, market: str = "future"
     ) -> LedgerReconciliation:
+        """Spot availability is unspent quote cash; futures include marked PnL."""
+        market = canonical_market(market)
         unrealized = float(unrealized_pnl)
         observed_equity = float(equity)
         margin = float(margin_used)
@@ -112,7 +116,7 @@ class AccountLedger:
             unrealized_pnl=unrealized,
             equity=observed_equity,
             margin_used=margin,
-            free_margin=observed_equity - margin,
+            free_margin=(balance if market == "spot" else observed_equity) - margin,
             balanced=math.isclose(expected_equity, observed_equity, rel_tol=1e-12, abs_tol=1e-9),
         )
 

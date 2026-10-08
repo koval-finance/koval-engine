@@ -20,7 +20,8 @@ Two versioned profiles share this class (see ``paper_profile.py``):
 - Take-profit is market-on-touch (venue ``TAKE_PROFIT_MARKET``): it pays the
   full adverse adjustment and is never capped at the target.
 - An entry debits ``notional / leverage`` of margin and is rejected when
-  ``margin + commission`` exceeds ``equity - margin_used``.
+  ``margin + commission`` exceeds availability: ``balance - margin_used``
+  for Spot quote cash, ``equity - margin_used`` for Futures.
 
 ``paper_ohlcv_realistic_v2`` preserves v1 cost arithmetic and adds favorable
 limit-gap pricing, same-entry-bar protection, explicit stop-first ambiguity
@@ -444,6 +445,7 @@ class PaperBroker:
             unrealized_pnl=self._unrealized(self._last_close),
             equity=self.equity,
             margin_used=self.margin_used,
+            market=self._market,
         )
 
     def _unrealized(self, price: float) -> float:
@@ -513,9 +515,14 @@ class PaperBroker:
             price,
             commission_bps=self._fee_rate(liquidity_role),
         )
-        available = (
-            self.equity if margin_mark is None else self.balance + self._unrealized(margin_mark)
-        ) - self.margin_used
+        if self._market == "spot":
+            # Purchased base is held at entry cost in margin_used. Its marked
+            # PnL changes equity, but cannot debit or fund quote-cash purchases.
+            available = self.balance - self.margin_used
+        else:
+            available = (
+                self.equity if margin_mark is None else self.balance + self._unrealized(margin_mark)
+            ) - self.margin_used
         if needed + fee > available:
             return f"insufficient_margin: required {needed + fee:.8f}, available {available:.8f}"
         return None

@@ -398,6 +398,7 @@ class LiveEngine:
             daily_baseline_equity=config.daily_baseline_equity,
             peak_equity=config.peak_equity,
             ledger=broker_ledger,
+            market=canonical_market(config.market),
         )
         bind_account = getattr(self._strategy, "bind_account", None)
         if bind_account is not None:
