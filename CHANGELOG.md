@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.12.5] - 2026-10-08
+
 ### Fixed
 
 - Spot paper account availability and entry affordability now use unspent
@@ -423,7 +425,8 @@ First public release.
 - The MIT/GPL boundary is enforced by a test rather than by convention: no file in this package may import Backtrader.
 - Releases are published to PyPI through Trusted Publishing (OIDC) with PEP 740 attestations. No long-lived PyPI credential is used in CI.
 
-[Unreleased]: https://github.com/koval-finance/koval-engine/compare/v0.12.4...HEAD
+[Unreleased]: https://github.com/koval-finance/koval-engine/compare/v0.12.5...HEAD
+[0.12.5]: https://github.com/koval-finance/koval-engine/compare/v0.12.4...v0.12.5
 [0.12.4]: https://github.com/koval-finance/koval-engine/compare/v0.12.2...v0.12.4
 [0.12.2]: https://github.com/koval-finance/koval-engine/compare/v0.12.1...v0.12.2
 [0.12.1]: https://github.com/koval-finance/koval-engine/compare/v0.12.0...v0.12.1

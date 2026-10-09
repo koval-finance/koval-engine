@@ -31,6 +31,9 @@ set it serialize exactly as before. It also provides a historical position-exit
 intent and explicit disabled take-profit, guarded by plugin capabilities.
 The engine protocol remains 2; MIT paper and sandbox execution remain
 bracket-only. These changes include the earlier unpublished 0.12.3 candidate.
+The 0.12.5 patch makes Spot paper cash availability and entry affordability use
+unspent quote cash (`balance - margin_used`). Unrealized PnL changes equity
+without changing purchase capacity; Futures accounting remains unchanged.
 See the [runtime and plugin migration contract](https://github.com/koval-finance/koval-engine/blob/main/agents_docs/runtime_contract.md)
 and the [execution realism review](https://github.com/koval-finance/koval-engine/blob/main/agents_docs/realism_review.md).
 
