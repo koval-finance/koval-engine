@@ -70,6 +70,7 @@ class PlatformAccountState:
             raise ValueError("account and broker ledger starting balances must match")
         self._ledger = ledger or AccountLedger(bal)
         self._equity = bal
+        self._last_marked_equity = bal
         self._peak_equity = float(peak_equity) if peak_equity is not None else bal
         self._margin_used = 0.0
         self._position: OpenPosition | None = None
@@ -87,10 +88,15 @@ class PlatformAccountState:
         day = int(timestamp_ms) // _MS_PER_DAY
         if self._current_day is None:
             self._current_day = day
-        elif day != self._current_day:
+        elif day > self._current_day:
             self._current_day = day
-            self._day_start_equity = self._equity
+            # Fills and fees may update current equity before this bar is marked.
+            # The new day starts at the previous supplied equity mark.
+            self._day_start_equity = self._last_marked_equity
+        # An older candle-open mark may follow a newer external fill timestamp.
+        # Keep the risk day monotonic so that mark cannot reset today's loss.
         self._equity = equity
+        self._last_marked_equity = equity
         if equity > self._peak_equity:
             self._peak_equity = equity
 
@@ -133,6 +139,31 @@ class PlatformAccountState:
             margin=current.margin + delta_margin,
         )
         self._margin_used += delta_margin
+
+    def set_position_projection(self, position: OpenPosition) -> None:
+        """Replace position totals supplied by an authoritative execution ledger.
+
+        This updates only the float projection, without recording cashflows or
+        changing equity. It does not establish venue reconciliation or flatness.
+        """
+        if not isinstance(position, OpenPosition) or position.side not in {"buy", "sell"}:
+            raise ValueError("invalid account position projection")
+        values = (position.entry_price, position.quantity, position.current_stop, position.margin)
+        try:
+            entry_price, quantity, stop, margin = (float(value) for value in values)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("invalid account position projection") from exc
+        if (
+            any(isinstance(value, bool) for value in values)
+            or not all(math.isfinite(value) for value in (entry_price, quantity, stop, margin))
+            or entry_price <= 0
+            or quantity <= 0
+            or stop < 0
+            or margin < 0
+        ):
+            raise ValueError("invalid account position projection")
+        self._position = OpenPosition(position.side, entry_price, quantity, stop, margin)
+        self._margin_used = margin
 
     def on_stop_update(self, new_stop: float) -> None:
         """Mirror a confirmed protective-stop update in the account snapshot."""

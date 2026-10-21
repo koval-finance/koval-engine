@@ -1,4 +1,4 @@
-"""Binance Futures REST adapter (read-only).
+"""Binance Spot and Futures REST adapter (read-only).
 
 This adapter exposes ``fetch_ohlcv`` only. Order placement, balances, and
 positions are the sandbox broker's responsibility, not the data adapter's.
@@ -29,6 +29,7 @@ _SPOT_URL: Final = "https://api.binance.com"
 _KLINES_PATH: Final = "/fapi/v1/klines"
 _SPOT_KLINES_PATH: Final = "/api/v3/klines"
 _MAX_LIMIT: Final = 1500
+_SPOT_MAX_LIMIT: Final = 1000
 _FUNDING_LIMIT: Final = 1000
 _MARKETS: Final[frozenset[str]] = frozenset({"spot", "future"})
 
@@ -76,7 +77,7 @@ class BinanceAdapter(ExchangeAdapter):
         self._testnet = testnet
         self._session = session or requests.Session()
         self._timeout = timeout
-        self._page_limit = page_limit
+        self._page_limit = min(page_limit, _SPOT_MAX_LIMIT) if market == "spot" else page_limit
         self._max_retries = max_retries
         self._retry_backoff_seconds = retry_backoff_seconds
 

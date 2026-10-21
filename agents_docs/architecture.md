@@ -12,6 +12,7 @@ For the typed-graph contracts specifically, see
 | `src/koval/engine/market_identity.py`, `run_identity.py` | canonical market vocabulary, evidence content hashes, and actual-input run identity |
 | `src/koval/engine/protection.py` | shared validation of a dynamic protective-bracket snapshot |
 | `src/koval/exchanges/binance_algo.py` | conditional-order translation and actual child-order lookup through the sandbox transport |
+| `src/koval/engine/spot_contract.py`, `spot_account.py`, `spot_execution.py` | injected Spot Testnet port, Decimal accounting and reconciled lifecycle; no transport |
 | `src/koval/engine/live_engine.py` | the bar loop for paper and sandbox sessions |
 | `src/koval/engine/live_feed.py` | replay/polling feeds, continuity checks, bounded outage retries, and between-bar supervision |
 | `src/koval/engine/paper_broker.py` | simulated bracket/OCO fills with pessimistic ambiguous-bar resolution |
@@ -45,7 +46,9 @@ Tests mirror this layout under `tests/`.
 
 1. An archived canonical dataset or live feed supplies validated, chronological
    bars. A live feed emits only closed bars and supervises working sandbox orders
-   while polling or retrying market data.
+   while polling or retrying market data. Only adapter-fetch failures consume
+   the data retry budget: order-supervision failures propagate immediately.
+   A stop signal prevents any further buffered candle from being emitted.
 2. At each timestamp the paper broker settles funding, evaluates mark-price
    liquidation, applies already-active protection, and then evaluates entry work
    under the profile's documented equal-timestamp policy. A fill that is already

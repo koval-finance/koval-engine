@@ -29,7 +29,7 @@ This is a small project with best-effort maintenance. If you have not heard back
 
 ## The invariant we most want broken
 
-The engine claims to have **no code path that reaches a real-money trading endpoint**. Only `paper` and `binance_sandbox` are reachable execution modes. The Binance broker accepts only its allowlisted futures-testnet origin, and WhiteBIT execution is disabled because no verified public sandbox exists.
+The engine claims to have **no code path that reaches a real-money trading endpoint**. Only `paper` and `binance_sandbox` are built-in factory execution modes. Explicitly injected `binance_spot_testnet` brokers must satisfy the [Spot contract](agents_docs/spot_testnet_contract.md); their transport and Testnet-only origin enforcement belong to the host. This package provides no Spot transport. The Binance broker accepts only its allowlisted futures-testnet origin, and WhiteBIT execution is disabled because no verified public sandbox exists.
 
 The claim rests on three mechanisms:
 

@@ -36,6 +36,22 @@ def test_daily_pnl_resets_on_utc_day_boundary():
     assert acc.snapshot().daily_pnl == 0.0
 
 
+def test_older_mark_cannot_rewind_the_current_risk_day():
+    from koval.engine.account_state import PlatformAccountState
+
+    account = PlatformAccountState(starting_balance=1000)
+    account.on_bar(equity=1000, timestamp_ms=_MS_PER_DAY - 120_000)
+    account.on_bar(equity=980, timestamp_ms=_MS_PER_DAY)
+    account.on_bar(equity=980, timestamp_ms=_MS_PER_DAY - 60_000)
+    assert account.snapshot().daily_pnl == -20
+    assert account.snapshot().daily_loss_pct == 2
+
+    account.on_bar(equity=980, timestamp_ms=_MS_PER_DAY + 60_000)
+    assert account.snapshot().daily_pnl == -20
+    account.on_bar(equity=970, timestamp_ms=2 * _MS_PER_DAY)
+    assert account.snapshot().daily_pnl == -10
+
+
 def test_open_records_position_and_margin():
     from koval.engine.account_state import PlatformAccountState
 

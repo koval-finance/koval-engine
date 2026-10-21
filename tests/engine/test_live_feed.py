@@ -311,3 +311,73 @@ def test_polling_feed_fails_with_stable_reason_after_bounded_outage_retries():
 
     with pytest.raises(FeedContinuityError, match="market_data_retry_exhausted"):
         next(feed.bars(ImmediateWaitStop()))
+
+
+def test_polling_feed_does_not_retry_order_supervision_failure_as_a_data_outage():
+    import threading
+
+    from koval.engine.live_feed import PollingFeed
+
+    release = threading.Event()
+
+    class BlockedAdapter:
+        calls = 0
+
+        def fetch_ohlcv(self, symbol, timeframe, start_ms, end_ms):
+            self.calls += 1
+            assert release.wait(2), "supervision never ran during the fetch"
+            return _candles(1)
+
+    class ImmediateWaitStop(StopSignal):
+        def wait(self, seconds):
+            return False
+
+    def supervise():
+        if not release.is_set():
+            release.set()
+            raise RuntimeError("durable order storage failed")
+
+    adapter = BlockedAdapter()
+    degraded = []
+    feed = PollingFeed(
+        adapter,
+        symbol="BTCUSDT",
+        timeframe="1m",
+        clock=lambda: 60_000,
+        poll_seconds=0,
+        between_bars=supervise,
+        between_bars_seconds=0.001,
+        on_degraded=degraded.append,
+    )
+
+    try:
+        with pytest.raises(RuntimeError, match="durable order storage failed"):
+            next(feed.bars(ImmediateWaitStop()))
+    finally:
+        release.set()
+
+    assert adapter.calls == 1
+    assert degraded == []
+
+
+@pytest.mark.parametrize("stop_during_fetch", [False, True])
+def test_polling_feed_stops_before_yielding_more_fetched_candles(stop_during_fetch):
+    from koval.engine.live_feed import PollingFeed
+
+    stop = StopSignal()
+
+    class Adapter:
+        def fetch_ohlcv(self, symbol, timeframe, start_ms, end_ms):
+            if stop_during_fetch:
+                stop.set()
+            return _candles(2)
+
+    feed = PollingFeed(
+        Adapter(), symbol="BTCUSDT", timeframe="1m", clock=lambda: 120_000, poll_seconds=0
+    )
+    bars = feed.bars(stop)
+    if not stop_during_fetch:
+        assert int(next(bars)[0]) == 0
+        stop.set()
+
+    assert list(bars) == []

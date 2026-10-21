@@ -1,6 +1,6 @@
 """Simulated paper broker (MIT) - bracket / OCO fills against bar OHLC.
 
-Two versioned profiles share this class (see ``paper_profile.py``):
+Three versioned profiles share this class (see ``paper_profile.py``):
 
 ``paper_legacy_v1`` (default) - the original cost-free ruleset:
 - Market entry fills at the close of the signal bar (``fill_market_if_pending``).
@@ -33,9 +33,10 @@ Shared by all profiles:
 - Stop-loss fills when ``low <= SL`` (long) / ``high >= SL`` (short); a bar
   that gaps through the stop fills at the bar open.
 - Take-profit fills when ``high >= TP`` (long) / ``low <= TP`` (short); a bar
-  that opens beyond the target uses the (favourable) open as the reference.
-- Because OHLC does not reveal intrabar ordering, a bar crossing both SL and
-  TP is resolved SL-first.
+  that opens beyond an already-working target uses the (favourable) open before
+  any later intrabar stop touch. Intrabar entries cannot reuse that earlier open.
+- When neither working leg crosses at the open, OHLC does not reveal intrabar
+  ordering; a bar crossing both SL and TP is resolved SL-first.
 - No order-book or queue-position model. Results are a deterministic simulation,
   not a prediction or bound on venue execution.
 Equity = realized balance + unrealized PnL of the open position marked to the
@@ -1400,6 +1401,18 @@ class PaperBroker:
                 liquidity=liquidity,
                 volume=volume,
             )
+        if allow_open_gap and (
+            (is_long and open >= p.target_price) or (not is_long and open <= p.target_price)
+        ):
+            # Already-working protection sees the open before any intrabar touch.
+            return self._close(
+                p,
+                reference=float(open),
+                kind="take_profit",
+                ts_ms=ts_ms,
+                liquidity=liquidity,
+                volume=volume,
+            )
         hit_sl = low <= p.stop_price if is_long else high >= p.stop_price
         hit_tp = high >= p.target_price if is_long else low <= p.target_price
         if hit_sl and hit_tp and self._profile.ambiguity_policy is not None:
@@ -1420,14 +1433,9 @@ class PaperBroker:
                 volume=volume,
             )
         if hit_tp:
-            # A bar that opens beyond the target is filled at that open.
-            favorable_open = (is_long and open >= p.target_price) or (
-                not is_long and open <= p.target_price
-            )
-            reference = float(open) if favorable_open else p.target_price
             return self._close(
                 p,
-                reference=reference,
+                reference=p.target_price,
                 kind="take_profit",
                 ts_ms=ts_ms,
                 liquidity=liquidity,

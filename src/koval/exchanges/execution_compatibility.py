@@ -22,6 +22,9 @@ _EXECUTION_MATRIX: dict[tuple[str, str, str], ExecutionCompatibility] = {
     ("binance", "spot", "paper"): ExecutionCompatibility(
         "binance", "spot", "paper", False, True, False, 1.0
     ),
+    ("binance", "spot", "binance_spot_testnet"): ExecutionCompatibility(
+        "binance", "spot", "binance_spot_testnet", True, True, False, 1.0
+    ),
     ("binance", "future", "paper"): ExecutionCompatibility(
         "binance", "future", "paper", False, True, True, 125.0
     ),

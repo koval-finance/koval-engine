@@ -6,7 +6,7 @@ acceptance must be measured independently.
 
 ## Versions and compatibility
 
-The package release is `0.12.5`. `ENGINE_PROTOCOL_VERSION` is `2`;
+This source tree targets package release `0.12.6`. `ENGINE_PROTOCOL_VERSION` is `2`;
 protocol `1` remains accepted only without an explicit `runtime_contract`.
 The fill/runtime identifier remains `koval_runtime_v2`; input identity remains
 `koval_run_identity_v1`. These names do not certify venue realism.
@@ -138,6 +138,23 @@ filled quantity and accepted protective levels. It fires once per position;
 subsequent partial quantities are read from account snapshots. Hooks run within
 fill processing; the complete bar-close equity is available at `on_bar`.
 
+When `PlatformAccountState.on_bar` advances to a new UTC day, its daily baseline
+is the last supplied equity mark. Current-bar fills, fees or a full close must
+not replace that baseline before the new mark arrives. A loss on the first bar
+of the day therefore remains visible to daily-loss gates. Plugins using this
+shared account state inherit the correction without a new ordering API.
+The risk day advances monotonically: an older candle-open timestamp delivered
+after a newer external fill can update equity without resetting the daily
+baseline backward or erasing the current day's loss.
+
+`PlatformAccountState.set_position_projection(OpenPosition)` replaces the
+single-position float totals supplied by an authoritative execution ledger.
+It validates finite positive quantity/entry price and finite nonnegative
+margin/stop, but records no cashflow and does not mark equity or establish
+venue reconciliation. The injected Spot ledger uses it after executions to
+preserve exact residuals and avoid accumulated float subtraction. Existing
+`on_open`, `on_entry_fill` and `on_partial_close` callers retain their contracts.
+
 `LiveEngineConfig.end_of_data_policy` accepts `flatten_at_last_close` (default)
 or `mark_at_last_close` (paper only). On natural feed exhaustion the latter
 cancels unfilled entries, retains protected exposure and marks it at the last
@@ -151,6 +168,15 @@ PaperBroker acknowledges its already-matched protective legs using the
 pre-exit quantity. A gap beyond an accepted bracket remains a simulated market
 containment fill, while external broker fills still require strict protection
 validation.
+
+Already-working paper protection evaluates the opening price before intrabar
+high/low touches. A target crossed at the open fills there before a later stop
+touch; stop-first pessimism still resolves unknown intrabar ordering when the
+open is inside the bracket. A limit/stop entry occurring intrabar cannot reuse
+the earlier opening price for its take-profit. Cost adjustments and each
+profile's protection-activation timing remain unchanged. These correctness
+fixes can change prior simulated results; replay must retain the exact engine
+and plugin builds, not only the execution-profile name.
 
 ## Dynamic protection
 
@@ -185,6 +211,13 @@ containment can cancel and reconcile them. A rejection, fill during replacement,
 or unconfirmed old-order cancellation fails closed.
 Stop-only sandbox replacement likewise verifies acceptance and cancellation,
 preserves identifiers on uncertainty, and returns the normalized accepted price.
+
+## Injected Spot Testnet
+
+Engine 0.12.6 adds a separate, explicitly injected Spot Testnet broker contract.
+See [Spot Testnet contract](spot_testnet_contract.md) for exact fields, supported
+capabilities, fee valuation, linked protection, callback ordering and public
+exposure recovery. The built-in factory and existing Futures path are unchanged.
 
 ## Spot refusal
 

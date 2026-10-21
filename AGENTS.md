@@ -17,8 +17,10 @@ Tests pin most of these; [agents_docs/invariants.md](agents_docs/invariants.md)
 says exactly which, and marks the rest as the reviewer's job instead. All six
 carry the same weight regardless of which enforces them.
 
-- **No real-money code path.** Only `paper` and `binance_sandbox` execution
-  modes exist. Never add, enable, or assume another.
+- **No real-money code path.** The built-in factory allows only `paper` and
+  `binance_sandbox`. Explicit host-owned `binance_spot_testnet` injection is
+  limited by [the Spot contract](agents_docs/spot_testnet_contract.md). Never
+  add a production target or widen a transport origin allowlist.
 - **MIT only.** No file imports `backtrader` or any package derived from it.
   Backtest engines are separate plugins found through the
   `koval.backtest_engines` entry-point group.

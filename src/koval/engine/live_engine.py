@@ -45,6 +45,9 @@ from koval.engine.run_identity import (
     execution_evidence_manifest,
 )
 from koval.engine.runtime_journal import RuntimeJournal
+from koval.engine.spot_account import decimal_value, spot_decimal_context
+from koval.engine.spot_contract import SPOT_TESTNET, validate_spot_selection
+from koval.engine.spot_execution import SpotExecution
 from koval.exchanges.auth import safe_exception_message
 from koval.exchanges.base import timeframe_ms
 from koval.exchanges.execution_compatibility import compatibility_for
@@ -355,7 +358,19 @@ class LiveEngine:
         self._config = config
         self._terminal_policy: str | None = None
         self._session_id = session_id or uuid.uuid4().hex
-        self._journal = RuntimeJournal(self._session_id, on_record)
+        is_spot = broker is not None and broker.target == SPOT_TESTNET
+
+        def spot_archive(record):
+            try:
+                on_record(record)
+            except Exception:
+                self._spot_storage_failed()
+                raise
+
+        self._journal = RuntimeJournal(
+            f"{self._session_id}:segment:{uuid.uuid4().hex}" if is_spot else self._session_id,
+            spot_archive if is_spot and on_record is not None else on_record,
+        )
         self._last_input: np.ndarray | None = None
         self._ledger_cursor = 0
         self._cashflow_fill_ids: dict[int, str] = {}
@@ -364,17 +379,30 @@ class LiveEngine:
         self._open_decision_context: dict | None = None
         self._pending_decision_context: dict | None = None
         self._profile = resolve_paper_profile(config.execution)
-        self._broker = broker or PaperBroker(
-            config.initial_capital,
-            profile=self._profile,
-            market=config.market,
-            funding=config.funding,
-            fee_schedule=config.fee_schedule,
-            instrument_specs=config.instrument_specs,
-            mark_prices=config.mark_prices,
-            execution_proxy=config.execution_proxy,
-            exchange=config.exchange,
+        self._broker = (
+            broker
+            if broker is not None
+            else PaperBroker(
+                config.initial_capital,
+                profile=self._profile,
+                market=config.market,
+                funding=config.funding,
+                fee_schedule=config.fee_schedule,
+                instrument_specs=config.instrument_specs,
+                mark_prices=config.mark_prices,
+                execution_proxy=config.execution_proxy,
+                exchange=config.exchange,
+            )
         )
+        if self._broker.target == SPOT_TESTNET:
+            validate_spot_selection(
+                self._broker, config, graph, archive_enabled=on_record is not None
+            )
+        if canonical_market(config.market) == "spot" and self._broker.target not in {
+            "paper",
+            SPOT_TESTNET,
+        }:
+            raise ValueError("unsupported Spot execution target")
         self._validate_broker_config(config)
         if self._broker.target != "paper" and config.end_of_data_policy != "flatten_at_last_close":
             raise ValueError("mark_at_last_close is available only for paper replay")
@@ -469,6 +497,136 @@ class LiveEngine:
         self._containment_attempted = False
         self._containment_in_progress = False
         self._containment_confirmed: bool | None = None
+        self._spot = (
+            SpotExecution(
+                self._broker,
+                session_id=self._session_id,
+                capital=str(config.initial_capital),
+                binding={"strategy_sha256": self._strategy_sha256, "timeframe": config.timeframe},
+                emit=self._spot_emit,
+                account=self._account,
+            )
+            if self._broker.target == SPOT_TESTNET
+            else None
+        )
+
+    @property
+    @spot_decimal_context
+    def spot_account(self) -> dict:
+        """Exact Spot balances and explicit valuation/closure status, read-only."""
+        if self._spot is None:
+            raise ValueError("Spot Testnet broker required")
+        prices = [
+            f.price for f in self._spot.ledger.events.values() if decimal_value(f.quantity or "0")
+        ]
+        mark = str(self._window.c[-1]) if self._window.c else (prices[-1] if prices else "1")
+        return {
+            **self._spot.ledger.snapshot(mark),
+            "entries_halted": self._spot.halted or not self._spot.ready,
+            "pending_entry": self._spot.pending,
+            "quote_reserved": str(self._spot.quote_reserved),
+            "available_quote_cash": None
+            if self._spot.uncertain or not self._spot.ready
+            else str(self._spot.ledger.cash - self._spot.quote_reserved),
+            "equity_scope": "allocated_quote_and_base",
+            "uncertain": self._spot.uncertain,
+            "flat_confirmed": self._spot.flat_confirmed,
+            "protection": asdict(self._spot.protection) if self._spot.protection else None,
+            "risk_metrics_continuity": not self._spot.restored,
+        }
+
+    @property
+    def spot_state(self) -> dict:
+        """Host-persistable exposure facts; restore still requires fresh venue proof."""
+        if self._spot is None:
+            raise ValueError("Spot Testnet broker required")
+        return {"execution": self._spot.export_state(), "archive_checkpoint": self.checkpoint}
+
+    def reconcile_spot(self) -> dict:
+        """Perform the fresh, read-only Spot preflight/recovery gate."""
+        if self._spot is None:
+            raise ValueError("Spot Testnet broker required")
+        self._spot.reconcile()
+        self._sync_spot_position()
+        return self.spot_state
+
+    def restore_spot(self, state: dict) -> None:
+        """Restore into a fresh engine for supervision/closure with entries halted.
+
+        The host verifies the durable archive, ownership, and complete intent/fill
+        suffix first. Each engine instance has a distinct archive segment.
+        Start a new session after confirmed flatness to evaluate new entries.
+        """
+        if self._spot is None:
+            raise ValueError("Spot Testnet broker required")
+        self._spot.restore(state["execution"])
+        self._journal.write("spot_restore", 0, {"source_checkpoint": state["archive_checkpoint"]})
+
+    def close_spot(self) -> dict:
+        """Request one recorded close attempt and require confirmed flatness."""
+        if self._spot is None:
+            raise ValueError("Spot Testnet broker required")
+        try:
+            self._spot.close()
+        finally:
+            self._sync_spot_position()
+        return self.spot_account
+
+    def _spot_storage_failed(self) -> None:
+        spot = getattr(self, "_spot", None)
+        if spot is not None:
+            spot.persistence_failed = True
+            spot.halted = True
+            spot.uncertain = True
+            spot.ready = False
+            spot.flat_confirmed = False
+
+    def _spot_emit(self, kind: str, payload: dict) -> None:
+        callbacks = {
+            "order_intent": self._on_order_intent,
+            "order_ack": self._on_order_ack,
+            "fill": self._on_fill,
+            "trade": self._on_trade,
+        }
+        if kind in callbacks:
+            callbacks[kind](payload)
+        else:
+            self._journal.write(kind, int(payload.get("timestamp_ms", 0)), payload)
+        if kind == "trade":
+            self._strategy.on_close_position(self._trade_id, {"pnl": payload["pnl"]})
+            self._open_setup = None
+            self._emit(EventType.TRADE_CLOSED, payload)
+
+    def _sync_spot_position(self) -> None:
+        spot = self._spot
+        self._entries_halted = self._broker_entries_halted = spot.halted or not spot.ready
+        self._external_entry_pending = spot.pending
+        self._containment_attempted = spot.close_attempted
+        self._containment_confirmed = spot.flat_confirmed if spot.close_attempted else None
+        position = self._account.snapshot().open_position
+        if position is not None and self._open_setup is None and spot.entry_id:
+            intent = spot.intents[spot.entry_id]
+            setup = TradeSetup(
+                "long",
+                position.entry_price,
+                float(intent.stop_price),
+                float(intent.target_price),
+                size=position.quantity,
+                entry_type="market",
+            )
+            self._trade_id += 1
+            self._open_setup = setup
+            self._strategy.on_open_position(self._trade_id, setup)
+            self._emit(
+                EventType.TRADE_OPENED,
+                {
+                    "direction": "long",
+                    "entry_price": position.entry_price,
+                    "size": position.quantity,
+                },
+            )
+        if position is None:
+            self._open_setup = None
 
     @property
     def checkpoint(self) -> dict:
@@ -491,11 +649,15 @@ class LiveEngine:
                     timestamp = int(decision_time)
                     value["timestamp_basis"] = "decision_clock"
             if kind == "fill":
-                value["fill_id"] = f"{self._session_id}:fill:{self._journal.sequence + 1}"
+                value["fill_id"] = f"{self._journal.session_id}:fill:{self._journal.sequence + 1}"
                 for sequence in value.get("metadata", {}).get("cashflow_sequences", []):
                     self._cashflow_fill_ids[sequence] = value["fill_id"]
             self._journal.write(kind, timestamp, value)
-            callback(value)
+            try:
+                callback(value)
+            except Exception:
+                self._spot_storage_failed()
+                raise
 
         return deliver
 
@@ -550,6 +712,9 @@ class LiveEngine:
             ):
                 raise ValueError(f"paper broker evidence does not match live config: {name}")
 
+    def _spot_execution_metadata(self) -> dict:
+        return {"version": "binance_spot_testnet_v1", "identity": asdict(self._spot.identity)}
+
     def _run_identity(self) -> dict:
         return build_run_identity(
             market_identity=self._market_identity,
@@ -558,6 +723,8 @@ class LiveEngine:
             execution_profile=(
                 self._profile.as_config()
                 if self._broker.target == "paper"
+                else self._spot_execution_metadata()
+                if self._spot is not None
                 else getattr(self._broker, "resolved_metadata", {"version": "unavailable"})
             ),
             execution_evidence=getattr(
@@ -592,6 +759,8 @@ class LiveEngine:
         return self._window.ts[-1] if self._window.ts else None
 
     def run(self, feed: LiveFeed, stop: StopSignal) -> None:
+        if self._spot is not None and not self._spot.ready:
+            raise RuntimeError("Spot Testnet requires reconcile_spot before run")
         self._emit(
             EventType.SESSION_START,
             {
@@ -694,7 +863,7 @@ class LiveEngine:
             self._journal.write("bar_processed", ts, {"phase": phase})
             return
         self._primary_identity.append(row)
-        process_bar = getattr(self._broker, "process_bar", None)
+        process_bar = getattr(self._broker, "process_bar", None) if self._spot is None else None
         paper_fills = (
             process_bar(ts_ms=ts, open=o, high=h, low=low, close=c, volume=v)
             if process_bar is not None
@@ -719,6 +888,7 @@ class LiveEngine:
         if (
             self._broker_position() is None
             and self._broker_pending()
+            and self._spot is None
             and getattr(self._strategy, "should_cancel_entry", lambda: False)()
         ):
             if not self._cancel_working_orders():
@@ -743,6 +913,8 @@ class LiveEngine:
         self._journal.write("bar_processed", ts, {"phase": phase})
 
     def _update_protection(self) -> None:
+        if self._spot is not None:
+            return
         # Snapshot both hooks before touching either leg of a possible OCO pair.
         new_sl = self._strategy.on_sl_update(self._trade_id)
         new_tp = getattr(self._strategy, "on_tp_update", lambda _: None)(self._trade_id)
@@ -851,6 +1023,13 @@ class LiveEngine:
                 "why_entry": list(setup.why_entry),
             },
         )
+        if self._spot is not None:
+            try:
+                self._spot.submit(intent)
+                self._spot.poll()
+            finally:
+                self._sync_spot_position()
+            return
         self._on_order_intent(_intent_to_dict(intent))
         self._decision_context["why_entry"] = list(setup.why_entry)
         self._pending_decision_context = deepcopy(self._decision_context)
@@ -941,6 +1120,12 @@ class LiveEngine:
             raise
 
     def _poll_broker_fills(self) -> None:
+        if self._spot is not None:
+            try:
+                self._spot.poll()
+            finally:
+                self._sync_spot_position()
+            return
         for fill in self._broker.poll_fills(self._session_id):
             self._on_fill(_broker_fill_to_dict(fill))
             if self._broker.target != "paper":
@@ -1400,6 +1585,15 @@ class LiveEngine:
         }
 
     def _finalize(self, *, require_confirmation: bool = True, end_of_data: bool = False) -> None:
+        if self._spot is not None:
+            # On any prior uncertainty the host must reconcile; finalization
+            # must never turn an exception into another automatic mutation.
+            if not self._spot.uncertain and not self._spot.flat_confirmed:
+                self.close_spot()
+            self._emit_status(terminal=True)
+            if require_confirmation and not self._spot.flat_confirmed:
+                raise RuntimeError("Spot closure unconfirmed")
+            return
         retain = end_of_data and self._config.end_of_data_policy == "mark_at_last_close"
         self._terminal_policy = "mark_at_last_close" if retain else "flatten_at_last_close"
         position = self._broker_position()
@@ -1458,6 +1652,12 @@ class LiveEngine:
         return True
 
     def _contain_exposure(self, reason: str, *, retry: bool = False) -> None:
+        if self._spot is not None:
+            self._spot.halted = True
+            self._spot.uncertain = True
+            self._spot.ready = False
+            self._sync_spot_position()
+            return
         if (
             self._containment_confirmed is True
             or self._containment_in_progress
@@ -1607,18 +1807,24 @@ class LiveEngine:
         self._record_account()
         snap = self._account.snapshot()
         pos = self._broker_position()
+        complete_valuation = self._spot is None or self.spot_account["valuation_complete"]
+        risk_continuity = self._spot is None or not self._spot.restored
         self._on_status(
             {
                 "entries_halted": self._entries_halted,
                 "metrics": {
                     "equity": snap.equity,
                     "balance": snap.balance,
-                    "realized_pnl": snap.realized_pnl,
+                    "realized_pnl": snap.realized_pnl if complete_valuation else None,
                     "unrealized_pnl": snap.unrealized_pnl,
-                    "daily_pnl": snap.daily_pnl,
-                    "daily_loss_pct": snap.daily_loss_pct,
-                    "drawdown_pct": snap.drawdown_pct,
-                    "fees": snap.fees,
+                    "daily_pnl": snap.daily_pnl if risk_continuity and complete_valuation else None,
+                    "daily_loss_pct": snap.daily_loss_pct
+                    if risk_continuity and complete_valuation
+                    else None,
+                    "drawdown_pct": snap.drawdown_pct
+                    if risk_continuity and complete_valuation
+                    else None,
+                    "fees": snap.fees if complete_valuation else None,
                     "funding": snap.funding,
                     "trade_realized_pnl": snap.trade_realized_pnl,
                 },
@@ -1637,11 +1843,13 @@ class LiveEngine:
                 },
                 "bars_processed": self._bar_index,
                 "run_identity": self._run_identity(),
-                "execution_profile": getattr(
-                    self._broker, "resolved_metadata", self._profile.as_config()
-                ),
+                "execution_profile": self._spot_execution_metadata()
+                if self._spot is not None
+                else getattr(self._broker, "resolved_metadata", self._profile.as_config()),
                 "margin_used": snap.margin_used,
-                "free_margin": snap.free_margin,
+                "free_margin": self.spot_account["available_quote_cash"]
+                if self._spot is not None
+                else snap.free_margin,
                 "higher_timeframe": {
                     "configured": self._config.higher_timeframe,
                     "required": self._config.requires_higher_timeframe,
@@ -1650,6 +1858,7 @@ class LiveEngine:
                 "containment_attempted": self._containment_attempted,
                 "containment_confirmed": self._containment_confirmed,
                 "terminal": terminal,
+                **({"spot_account": self.spot_account} if self._spot is not None else {}),
             }
         )
 
@@ -1670,10 +1879,14 @@ class LiveEngine:
         return self._account.snapshot().balance
 
     def _broker_position(self):
+        if self._spot is not None:
+            return self._account.snapshot().open_position
         broker_position = getattr(self._broker, "position", None)
         return broker_position or self._account.snapshot().open_position
 
     def _broker_pending(self) -> bool:
+        if self._spot is not None:
+            return self._spot.pending
         return self._external_entry_pending or bool(getattr(self._broker, "pending", False))
 
 

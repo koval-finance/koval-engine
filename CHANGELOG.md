@@ -6,6 +6,60 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.12.6] - 2026-10-21
+
+### Added
+
+- Explicitly injected Binance Spot Testnet broker contract, using the existing
+  LiveEngine evaluator with long-only, 1x market entry and fixed linked stop/target
+  protection. The built-in broker factory still rejects this target.
+- Decimal external Spot cash/inventory accounting, base/quote commissions and
+  explicit unavailable third-asset fee valuation; available quote reservations,
+  net inventory protection, bounded host rounding and visible residual dust.
+- Public Spot account snapshots, durable exposure-state restore and fresh venue
+  reconciliation. Recovery supervises/closes exposure with additions halted;
+  it does not replay historical entries or resume hidden evaluator state.
+- Deterministic coverage for partial fills, OCO/cancellation races, uncertain
+  submissions, callback failure and idempotent terminal events. No transport,
+  credentials, production execution path or runtime dependency is added.
+
+### Fixed
+
+- Binance Spot OHLCV pagination now caps pages at the venue's 1,000-row limit
+  and continues fetching longer ranges instead of treating a full Spot page
+  as the end of history.
+- Polling feeds propagate order-supervision failures immediately rather than
+  retrying them as market-data outages, and stop before emitting more buffered
+  candles once a stop is requested.
+- Daily risk baselines retain the previous equity mark across UTC midnight,
+  including when a full close or commission updates current equity first.
+  An older candle delivered after a newer Spot fill cannot rewind the risk day
+  and erase its loss. First-bar losses remain visible to strategy risk gates.
+- Already-working paper take-profit orders crossed at the opening price execute
+  before later intrabar stop touches. Intrabar entries cannot reuse the earlier
+  opening price for an exit. Unknown intrabar ordering remains stop-first.
+- Injected Spot events reject malformed timestamps, roles and sides before
+  durable accounting. Zero-quantity terminal prices never supply equity marks.
+- Spot fill archive/callback identifiers include the unique journal segment,
+  preventing collisions between distinct executions before and after recovery.
+  Paper and Futures fill identifier formats are unchanged.
+- Spot position projections now use authoritative Decimal totals after each
+  execution. Tiny genuine residual inventory and cost survive near-full sales,
+  repeated entry deltas and restore instead of being rejected by float rounding.
+  The private Decimal context also preserves residuals at the admitted numeric
+  bounds instead of rounding a partial sale to a false flat balance.
+
+### Compatibility and limits
+
+- The engine protocol remains 2, and the six runtime dependencies are unchanged.
+  The built-in factory still allows only `paper` and `binance_sandbox`.
+- Corrected daily risk baselines and paper protection chronology can change
+  simulated results. Reproduction requires the exact engine and plugin builds,
+  not only the execution-profile name.
+- The injected Spot contract requires a host-owned gateway and durable storage.
+  Offline tests do not establish authenticated Testnet acceptance, plugin or
+  application adoption, or real-money execution support.
+
 ## [0.12.5] - 2026-10-08
 
 ### Fixed
@@ -425,7 +479,8 @@ First public release.
 - The MIT/GPL boundary is enforced by a test rather than by convention: no file in this package may import Backtrader.
 - Releases are published to PyPI through Trusted Publishing (OIDC) with PEP 740 attestations. No long-lived PyPI credential is used in CI.
 
-[Unreleased]: https://github.com/koval-finance/koval-engine/compare/v0.12.5...HEAD
+[Unreleased]: https://github.com/koval-finance/koval-engine/compare/v0.12.6...HEAD
+[0.12.6]: https://github.com/koval-finance/koval-engine/compare/v0.12.5...v0.12.6
 [0.12.5]: https://github.com/koval-finance/koval-engine/compare/v0.12.4...v0.12.5
 [0.12.4]: https://github.com/koval-finance/koval-engine/compare/v0.12.2...v0.12.4
 [0.12.2]: https://github.com/koval-finance/koval-engine/compare/v0.12.1...v0.12.2

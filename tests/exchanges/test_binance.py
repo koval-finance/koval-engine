@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+from urllib.parse import parse_qs, urlparse
 
 import numpy as np
 import pytest
@@ -220,6 +221,40 @@ def test_fetch_ohlcv_paginates_when_range_exceeds_limit():
     assert out[0, 0] == 1_700_000_000_000
     assert out[-1, 0] == 1_700_000_180_000
     assert len(responses.calls) == 3
+
+
+@pytest.mark.parametrize("page_limit", [1000, 1500, 2000])
+@responses.activate
+def test_spot_ohlcv_fetches_the_full_range_with_the_venue_page_cap(page_limit):
+    url = "https://api.binance.com/api/v3/klines"
+    rows = [_binance_kline(i * 60_000, i) for i in range(1440)]
+    responses.add(responses.GET, url, json=rows[:1000], status=200)
+    responses.add(responses.GET, url, json=rows[1000:], status=200)
+
+    out = BinanceAdapter(testnet=False, market="spot", page_limit=page_limit).fetch_ohlcv(
+        "BTCUSDT", "1m", 0, 1440 * 60_000
+    )
+
+    np.testing.assert_array_equal(out[:, 0], np.arange(1440) * 60_000)
+    assert len(responses.calls) == 2
+    for call in responses.calls:
+        assert parse_qs(urlparse(call.request.url).query)["limit"] == ["1000"]
+
+
+@responses.activate
+def test_spot_ohlcv_preserves_smaller_requested_pages():
+    url = "https://api.binance.com/api/v3/klines"
+    responses.add(responses.GET, url, json=[_binance_kline(0, 0)], status=200)
+    responses.add(responses.GET, url, json=[_binance_kline(60_000, 1)], status=200)
+
+    out = BinanceAdapter(testnet=False, market="spot", page_limit=1).fetch_ohlcv(
+        "BTCUSDT", "1m", 0, 120_000
+    )
+
+    np.testing.assert_array_equal(out[:, 0], [0, 60_000])
+    assert len(responses.calls) == 2
+    for call in responses.calls:
+        assert parse_qs(urlparse(call.request.url).query)["limit"] == ["1"]
 
 
 @responses.activate

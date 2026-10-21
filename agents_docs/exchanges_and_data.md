@@ -22,6 +22,11 @@ anything here — this package's safety posture lives in this layer.
 - HTTP in tests is faked with the `responses` library; no test may hit a
   real network endpoint.
 
+Binance Spot OHLCV pages are capped at 1,000 rows, including when the caller
+uses the shared 1,500-row default. Pagination compares against that effective
+limit so a full Spot page does not prematurely terminate a longer range.
+Smaller caller limits and the existing Futures pagination are preserved.
+
 ## OHLCV cache
 
 `src/koval/exchanges/ohlcv_cache.py` caches fetched candles as Parquet under
@@ -113,19 +118,23 @@ collateral; unsupported margin modes fail before simulation.
 - `src/koval/exchanges/whitebit_sandbox.py` — fails closed. WhiteBIT has no
   verified public sandbox, so execution is disabled; data stays read-only.
 - `src/koval/exchanges/sandbox_factory.py` — the only place execution modes
-  are resolved. `paper` and `binance_sandbox` are the complete list.
+  are resolved. `paper` and `binance_sandbox` are the complete built-in factory list.
+  Explicit host-owned Spot Testnet injection uses [its separate contract](spot_testnet_contract.md).
 
 `PollingFeed` runs its between-bar broker hook while waiting, backing off, and
 while the adapter request itself is blocked. Consecutive market-data failures
 have a finite budget and end with `market_data_retry_exhausted`; this keeps the
 order watcher alive during a transient outage without allowing an indefinitely
 stale strategy session.
+Only adapter fetch failures consume that retry budget. A between-bar broker
+supervision failure propagates immediately, and a stop request prevents the
+feed from emitting further buffered candles.
 
 ## What is not accepted
 
-Adding a real-money execution path, widening the sandbox allowlist, or
-adding an execution mode is not a contribution this project accepts, from
-anyone, for any reason. The invariant is pinned by
+Adding a real-money execution path or widening the transport origin allowlist
+is not accepted. The separate injected Spot Testnet contract provides no
+transport and does not change the built-in factory allowlist. The invariant is pinned by
 [`tests/safety/test_no_real_money_path.py`](../tests/safety/test_no_real_money_path.py).
 
 The factory now forwards the complete optional paper evidence stack. Both direct

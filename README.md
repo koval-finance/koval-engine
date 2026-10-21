@@ -34,6 +34,15 @@ bracket-only. These changes include the earlier unpublished 0.12.3 candidate.
 The 0.12.5 patch makes Spot paper cash availability and entry affordability use
 unspent quote cash (`balance - margin_used`). Unrealized PnL changes equity
 without changing purchase capacity; Futures accounting remains unchanged.
+Version 0.12.6 adds a transport-free, explicitly injected Binance Spot Testnet
+contract for market BUY and fixed linked SELL stop/target protection, with exact
+Spot accounting and public exposure recovery. It requires a host-owned gateway;
+the built-in factory still refuses this target. See the
+[Spot Testnet contract](https://github.com/koval-finance/koval-engine/blob/main/agents_docs/spot_testnet_contract.md).
+It also fixes Spot history pagination, polling-feed failure/stop handling,
+UTC daily risk baselines, paper protection chronology and exact Spot residuals.
+These accounting and simulation corrections can change prior results; retain
+the exact engine and plugin versions when reproducing a run.
 See the [runtime and plugin migration contract](https://github.com/koval-finance/koval-engine/blob/main/agents_docs/runtime_contract.md)
 and the [execution realism review](https://github.com/koval-finance/koval-engine/blob/main/agents_docs/realism_review.md).
 
@@ -179,7 +188,7 @@ Read this before trusting a number it prints.
 
 - **Sandbox execution.** The built-in Binance USD-M Futures testnet broker accepts market, limit and stop entries. Conditional orders use Algo Service by default and fills are read from the triggered child order. Every entry requires a full stop-loss/take-profit bracket, and protection is confirmed immediately after a full fill; a working entry is supervised independently of blocked or retrying market-data requests. Venue commissions are read from `userTrades` and are never converted from another asset. A partial fill triggers containment instead of being adopted as a running strategy position. Signed requests support measured server-time skew; excessive skew and exhausted market-data retries fail with stable reasons.
 - **Execution scope.** The CLI and built-in Binance sandbox broker target futures. Data adapters serve both spot and futures, selected by `exchange_type`. Fees for a venue and market without a built-in schedule must be passed explicitly — `resolve_execution_settings` raises rather than defaulting to zero. Paper supports long-only spot at leverage one; the built-in exchange sandbox does not execute spot orders.
-- **No real-money trading.** Only `paper` and `binance_sandbox` are reachable execution modes. WhiteBIT execution fails closed. These boundaries are enforced in code and pinned by safety tests.
+- **No real-money trading.** The built-in factory allows only `paper` and `binance_sandbox`; explicit host-owned `binance_spot_testnet` injection follows the narrow published contract. WhiteBIT execution fails closed. These boundaries are enforced in code and pinned by safety tests.
 
 Paper session metadata includes content identities for actual primary/warm-up
 candles and supplied execution evidence. Set `LiveEngineConfig.exchange` (or use

@@ -96,6 +96,10 @@ class FeedContinuityError(RuntimeError):
     """Raised when a polling feed cannot supply the next expected closed bar."""
 
 
+class _FetchFailure(Exception):
+    """Only adapter failures are eligible for the market-data retry budget."""
+
+
 def _now_ms() -> int:
     return int(time.time() * 1000)
 
@@ -195,7 +199,7 @@ class PollingFeed:
                     return
                 backoff = 1.0
                 consecutive_failures = 0
-            except Exception as exc:  # noqa: BLE001 - a transient outage must not kill the session
+            except _FetchFailure as exc:
                 consecutive_failures += 1
                 self._on_degraded(str(exc))
                 if consecutive_failures >= self._max_consecutive_failures:
@@ -205,12 +209,14 @@ class PollingFeed:
                         f"{consecutive_failures} consecutive failures"
                     )
                     self._on_degraded(message)
-                    raise FeedContinuityError(message) from exc
+                    raise FeedContinuityError(message) from exc.__cause__
                 if self._wait_with_supervision(stop, min(backoff, 60.0)):
                     return
                 backoff *= 2
                 continue
             for row in np.asarray(candles, dtype=float):
+                if stop.is_set():
+                    return
                 ts = int(row[0])
                 closed = ts + self._tf_ms <= now
                 fresh = self._last_ts is None or ts > self._last_ts
@@ -240,7 +246,10 @@ class PollingFeed:
 
     def _fetch_with_supervision(self, stop: StopSignal, *, start: int, end: int) -> object | None:
         if self._between_bars is None:
-            return self._adapter.fetch_ohlcv(self._symbol, self._timeframe, start, end)
+            try:
+                return self._adapter.fetch_ohlcv(self._symbol, self._timeframe, start, end)
+            except Exception as exc:
+                raise _FetchFailure(str(exc)) from exc
         done = threading.Event()
         outcome: list[tuple[str, object]] = []
 
@@ -262,6 +271,8 @@ class PollingFeed:
                 return None
         kind, value = outcome[0]
         if kind == "error":
+            if isinstance(value, Exception):
+                raise _FetchFailure(str(value)) from value
             raise value  # type: ignore[misc]
         return value
 
