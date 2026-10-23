@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- Native bounded price-drop Spot DCA with shared average-price target and fixed
+  arithmetic buy-first Spot Grid, through separate typed recipe terminals.
+- Versioned cash-funded multi-order contracts, per-order and cycle reservations,
+  actual fill/fee/lot attribution, cancel/replace and terminal reconciliation
+  barriers, checksummed state restore and independent session state.
+- Dedicated Spot paper session with explicit causal OHLC/cost policy, shared
+  volume limits, partial fills, expiry, visible dust and hold/flatten behavior.
+  Legacy broker and Spot Testnet v1 execution remain unchanged and refuse recipes.
+- Checksummed JSON acceptance fixtures for independent historical-adapter adoption,
+  including accounting controls, nonzero fees, gaps, partial fills and cancel races.
+  No transport, real-money route or additional runtime dependency is added.
+
 ## [0.12.6] - 2026-10-21
 
 ### Added

@@ -29,6 +29,31 @@ def validate_graph(graph: dict) -> None:
     if not blocks:
         raise GraphValidationError("Graph has no blocks")
 
+    recipes = [
+        b
+        for b in blocks
+        if isinstance(b, dict) and b.get("type") in {"exec.spot_dca", "exec.spot_grid"}
+    ]
+    if recipes:
+        if len(recipes) != 1:
+            raise GraphValidationError("Graph requires exactly one Spot recipe terminal")
+        for block in blocks:
+            spec = NODE_CATALOG.get(block.get("type")) if isinstance(block, dict) else None
+            if (
+                spec
+                and block is not recipes[0]
+                and any(port.terminal for port in spec.output_ports.values())
+            ):
+                raise GraphValidationError(
+                    "Spot recipe cannot be mixed with other execution terminals"
+                )
+        if any(
+            c.get("from") == recipes[0].get("id") and c.get("from_port") == "recipe"
+            for c in connections
+            if isinstance(c, dict)
+        ):
+            raise GraphValidationError("Spot recipe terminal cannot be consumed")
+
     ids: dict[str, str] = {}  # id -> type
     for b in blocks:
         if not isinstance(b, dict):

@@ -87,6 +87,7 @@ def build_graph_strategy(
                 position_id=self._open_position_id,
                 symbol=str(self.config.get("symbol", "")),
                 account=account,
+                spot_runtime=getattr(self, "spot_runtime", None),
                 evidence=DecisionRecorder(),
                 decision_timestamp_ms=getattr(self, "decision_timestamp_ms", None),
                 history_start_ms=getattr(self, "history_start_ms", None),
@@ -125,6 +126,28 @@ def build_graph_strategy(
 
         def required_execution_capabilities(self) -> frozenset[str]:
             return self._required_capabilities
+
+        def get_spot_recipe_request(self):
+            requests = self._ensure_stepped().spot_recipes
+            return requests[0].model_copy(deep=True) if requests else None
+
+        def export_graph_state(self):
+            return {
+                "version": 1,
+                "states": deepcopy(self._executor.state._states),
+                "stepped_bar": self._stepped_bar,
+            }
+
+        def restore_graph_state(self, state):
+            if (
+                set(state) != {"version", "states", "stepped_bar"}
+                or state["version"] != 1
+                or set(state["states"]) - set(self._executor._nodes)
+            ):
+                raise ValueError("graph state binding mismatch")
+            self._executor.state._states = deepcopy(state["states"])
+            self._stepped_bar = state["stepped_bar"]
+            self._result = None
 
         def get_position_exit_request(self) -> PositionExitRequest | None:
             requests = self._ensure_stepped().position_exits

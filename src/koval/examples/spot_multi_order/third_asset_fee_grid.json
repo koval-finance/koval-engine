@@ -1,0 +1,558 @@
+{
+  "version": "koval_spot_fixture_v1",
+  "id": "third_asset_fee_grid",
+  "driver": "paper",
+  "ordering_policy": "open_low_high_close",
+  "graph": {
+    "blocks": [
+      {
+        "id": "start",
+        "type": "policy.ema_trend",
+        "params": {
+          "period": 2,
+          "direction": "bullish"
+        }
+      },
+      {
+        "id": "recipe",
+        "type": "exec.spot_grid",
+        "params": {
+          "version": 1,
+          "budget_quote": "200",
+          "fee_reserve_quote": "0",
+          "lower_price": "9",
+          "upper_price": "11",
+          "intervals": 2,
+          "quantity_per_slot": "10",
+          "stop_price": "8"
+        }
+      }
+    ],
+    "connections": [
+      {
+        "from": "start",
+        "from_port": "policy",
+        "to": "recipe",
+        "to_port": "start"
+      }
+    ]
+  },
+  "binding": {
+    "version": "koval_spot_multi_order_v1",
+    "account_id": "a-third_asset_fee_grid",
+    "session_id": "third_asset_fee_grid",
+    "symbol": "BTCUSDT",
+    "base_asset": "BTC",
+    "quote_asset": "USDT",
+    "exchange": "binance",
+    "market": "spot",
+    "mode": "paper",
+    "timeframe": "1m",
+    "graph_sha256": "8d2f7ed4326da0468e49e7942ee378c6d80a65ff8e7006ec856dc297259f5188",
+    "software_identity": "unreleased-control",
+    "policy_sha256": "92290d0a86614d02aec9679f80345a098e4fd49d2f2235f075a933e21b93db2b",
+    "instrument_sha256": "fb14daf30c80c540522ffa696726622d2e5f3c69e0f036e725c29b90ee6961cb",
+    "initial_quote_cash": "200",
+    "end_of_data_policy": "stop_and_hold",
+    "evaluation_start_ms": null,
+    "evaluation_end_ms": null,
+    "initial_peak_equity": null
+  },
+  "recipe": {
+    "kind": "grid",
+    "params": {
+      "version": 1,
+      "budget_quote": "200",
+      "fee_reserve_quote": "0",
+      "lower_price": "9",
+      "upper_price": "11",
+      "intervals": 2,
+      "quantity_per_slot": "10",
+      "stop_price": "8"
+    }
+  },
+  "instrument": {
+    "version": "koval_spot_instrument_v1",
+    "evidence_id": "synthetic",
+    "symbol": "BTCUSDT",
+    "base_asset": "BTC",
+    "quote_asset": "USDT",
+    "exchange": "binance",
+    "market": "spot",
+    "source": "independent synthetic accounting control",
+    "status": "synthetic_fixture",
+    "effective_from_ms": 0,
+    "effective_to_ms": 1000000000,
+    "acquired_at_ms": 0,
+    "price_tick": "0.000000000000000001",
+    "quantity_step": "0.000000000000000001",
+    "market_quantity_step": "0.000000000000000001",
+    "minimum_quantity": "0.00000001",
+    "maximum_quantity": "1000000",
+    "minimum_notional": "0.000001",
+    "maximum_notional": "1000000",
+    "minimum_price": "0.00000001",
+    "maximum_price": "1000000",
+    "maximum_open_orders": 128,
+    "market_minimum_quantity": null,
+    "market_maximum_quantity": null,
+    "apply_notional_to_market": true,
+    "price_band_low": null,
+    "price_band_high": null,
+    "price_band_source": null,
+    "unknown_active_filters": []
+  },
+  "policy": {
+    "version": "koval_spot_ohlcv_v1",
+    "path": "open_low_high_close",
+    "policy_id": "explicit-control",
+    "maker_fee_bps": "10",
+    "taker_fee_bps": "10",
+    "fee_asset": "BNB",
+    "fee_source": "synthetic explicit zero fees",
+    "buy_quote_fee_cap_bps": "0",
+    "sell_base_fee_cap_bps": "0",
+    "spread_bps": "0",
+    "slippage_bps": "0",
+    "maximum_volume_participation": "1",
+    "expires_after_bars": null,
+    "third_asset_quote_price": "100",
+    "third_asset_allowance_quote": "1"
+  },
+  "instrument_content_sha256": "fb14daf30c80c540522ffa696726622d2e5f3c69e0f036e725c29b90ee6961cb",
+  "provenance": "synthetic independent accounting control; no observed venue filters or queue claims",
+  "observations": [
+    {
+      "kind": "candle",
+      "candle": [
+        0,
+        "10",
+        "10",
+        "10",
+        "10",
+        "100"
+      ],
+      "mark": "10",
+      "expected": {
+        "quote_cash": "200",
+        "base_quantity": "0",
+        "inventory_cost": "0",
+        "quote_reserved": "0",
+        "base_reserved": "0",
+        "free_quote": "200",
+        "free_base": "0",
+        "realized_profit": "0",
+        "net_equity": "200",
+        "terminal_holding": "0",
+        "phase": "idle",
+        "intents": [],
+        "fills": [],
+        "order_states": []
+      }
+    },
+    {
+      "kind": "candle",
+      "candle": [
+        60000,
+        "11",
+        "11",
+        "11",
+        "11",
+        "100"
+      ],
+      "mark": "11",
+      "expected": {
+        "quote_cash": "200",
+        "base_quantity": "0",
+        "inventory_cost": "0",
+        "quote_reserved": "190",
+        "base_reserved": "0",
+        "free_quote": "10",
+        "free_base": "0",
+        "realized_profit": "0",
+        "net_equity": "200",
+        "terminal_holding": "0",
+        "phase": "active",
+        "intents": [
+          {
+            "client_order_id": "sm1-24ddcfbe0794fbb8d24bfbafc7ff92fc",
+            "purpose": "grid_buy",
+            "slot_id": "0",
+            "generation": 0,
+            "quantity": "10",
+            "limit_price": "9",
+            "quote_notional_cap": null
+          },
+          {
+            "client_order_id": "sm1-677988048c6ab1a63cefcb806a04da23",
+            "purpose": "grid_buy",
+            "slot_id": "1",
+            "generation": 0,
+            "quantity": "10",
+            "limit_price": "10",
+            "quote_notional_cap": null
+          }
+        ],
+        "fills": [],
+        "order_states": [
+          {
+            "client_order_id": "sm1-24ddcfbe0794fbb8d24bfbafc7ff92fc",
+            "generation": 0,
+            "status": "accepted",
+            "unknown_outcome": null,
+            "filled_quantity": "0",
+            "reserved_quote": "90",
+            "reserved_base": "0"
+          },
+          {
+            "client_order_id": "sm1-677988048c6ab1a63cefcb806a04da23",
+            "generation": 0,
+            "status": "accepted",
+            "unknown_outcome": null,
+            "filled_quantity": "0",
+            "reserved_quote": "100",
+            "reserved_base": "0"
+          }
+        ]
+      }
+    },
+    {
+      "kind": "candle",
+      "candle": [
+        120000,
+        "10",
+        "10",
+        "10",
+        "10",
+        "100"
+      ],
+      "mark": "10",
+      "expected": {
+        "quote_cash": "100",
+        "base_quantity": "10",
+        "inventory_cost": "100.1",
+        "quote_reserved": "90",
+        "base_reserved": "10",
+        "free_quote": "10",
+        "free_base": "0",
+        "realized_profit": "0",
+        "net_equity": "199.9",
+        "terminal_holding": "10",
+        "phase": "active",
+        "intents": [
+          {
+            "client_order_id": "sm1-24ddcfbe0794fbb8d24bfbafc7ff92fc",
+            "purpose": "grid_buy",
+            "slot_id": "0",
+            "generation": 0,
+            "quantity": "10",
+            "limit_price": "9",
+            "quote_notional_cap": null
+          },
+          {
+            "client_order_id": "sm1-677988048c6ab1a63cefcb806a04da23",
+            "purpose": "grid_buy",
+            "slot_id": "1",
+            "generation": 0,
+            "quantity": "10",
+            "limit_price": "10",
+            "quote_notional_cap": null
+          },
+          {
+            "client_order_id": "sm1-1a198d3c1cad7de9499b8c759159fa39",
+            "purpose": "grid_sell",
+            "slot_id": "1",
+            "generation": 0,
+            "quantity": "10",
+            "limit_price": "11",
+            "quote_notional_cap": null
+          }
+        ],
+        "fills": [
+          {
+            "client_order_id": "sm1-677988048c6ab1a63cefcb806a04da23",
+            "purpose": "grid_buy",
+            "side": "buy",
+            "quantity": "10",
+            "price": "10",
+            "fees": [
+              {
+                "asset": "BNB",
+                "quantity": "0.001"
+              }
+            ]
+          }
+        ],
+        "order_states": [
+          {
+            "client_order_id": "sm1-24ddcfbe0794fbb8d24bfbafc7ff92fc",
+            "generation": 0,
+            "status": "accepted",
+            "unknown_outcome": null,
+            "filled_quantity": "0",
+            "reserved_quote": "90",
+            "reserved_base": "0"
+          },
+          {
+            "client_order_id": "sm1-677988048c6ab1a63cefcb806a04da23",
+            "generation": 0,
+            "status": "filled",
+            "unknown_outcome": null,
+            "filled_quantity": "10",
+            "reserved_quote": "0",
+            "reserved_base": "0"
+          },
+          {
+            "client_order_id": "sm1-1a198d3c1cad7de9499b8c759159fa39",
+            "generation": 0,
+            "status": "accepted",
+            "unknown_outcome": null,
+            "filled_quantity": "0",
+            "reserved_quote": "0",
+            "reserved_base": "10"
+          }
+        ]
+      }
+    },
+    {
+      "kind": "candle",
+      "candle": [
+        180000,
+        "11",
+        "11",
+        "11",
+        "11",
+        "100"
+      ],
+      "mark": "11",
+      "expected": {
+        "quote_cash": "210",
+        "base_quantity": "0",
+        "inventory_cost": "0",
+        "quote_reserved": "90",
+        "base_reserved": "0",
+        "free_quote": "120",
+        "free_base": "0",
+        "realized_profit": "9.79",
+        "net_equity": "209.79",
+        "terminal_holding": "0",
+        "phase": "active",
+        "intents": [
+          {
+            "client_order_id": "sm1-24ddcfbe0794fbb8d24bfbafc7ff92fc",
+            "purpose": "grid_buy",
+            "slot_id": "0",
+            "generation": 0,
+            "quantity": "10",
+            "limit_price": "9",
+            "quote_notional_cap": null
+          },
+          {
+            "client_order_id": "sm1-677988048c6ab1a63cefcb806a04da23",
+            "purpose": "grid_buy",
+            "slot_id": "1",
+            "generation": 0,
+            "quantity": "10",
+            "limit_price": "10",
+            "quote_notional_cap": null
+          },
+          {
+            "client_order_id": "sm1-1a198d3c1cad7de9499b8c759159fa39",
+            "purpose": "grid_sell",
+            "slot_id": "1",
+            "generation": 0,
+            "quantity": "10",
+            "limit_price": "11",
+            "quote_notional_cap": null
+          }
+        ],
+        "fills": [
+          {
+            "client_order_id": "sm1-677988048c6ab1a63cefcb806a04da23",
+            "purpose": "grid_buy",
+            "side": "buy",
+            "quantity": "10",
+            "price": "10",
+            "fees": [
+              {
+                "asset": "BNB",
+                "quantity": "0.001"
+              }
+            ]
+          },
+          {
+            "client_order_id": "sm1-1a198d3c1cad7de9499b8c759159fa39",
+            "purpose": "grid_sell",
+            "side": "sell",
+            "quantity": "10",
+            "price": "11",
+            "fees": [
+              {
+                "asset": "BNB",
+                "quantity": "0.0011"
+              }
+            ]
+          }
+        ],
+        "order_states": [
+          {
+            "client_order_id": "sm1-24ddcfbe0794fbb8d24bfbafc7ff92fc",
+            "generation": 0,
+            "status": "accepted",
+            "unknown_outcome": null,
+            "filled_quantity": "0",
+            "reserved_quote": "90",
+            "reserved_base": "0"
+          },
+          {
+            "client_order_id": "sm1-677988048c6ab1a63cefcb806a04da23",
+            "generation": 0,
+            "status": "filled",
+            "unknown_outcome": null,
+            "filled_quantity": "10",
+            "reserved_quote": "0",
+            "reserved_base": "0"
+          },
+          {
+            "client_order_id": "sm1-1a198d3c1cad7de9499b8c759159fa39",
+            "generation": 0,
+            "status": "filled",
+            "unknown_outcome": null,
+            "filled_quantity": "10",
+            "reserved_quote": "0",
+            "reserved_base": "0"
+          }
+        ]
+      }
+    },
+    {
+      "kind": "candle",
+      "candle": [
+        240000,
+        "11",
+        "11",
+        "11",
+        "11",
+        "100"
+      ],
+      "mark": "11",
+      "expected": {
+        "quote_cash": "210",
+        "base_quantity": "0",
+        "inventory_cost": "0",
+        "quote_reserved": "190",
+        "base_reserved": "0",
+        "free_quote": "20",
+        "free_base": "0",
+        "realized_profit": "9.79",
+        "net_equity": "209.79",
+        "terminal_holding": "0",
+        "phase": "active",
+        "intents": [
+          {
+            "client_order_id": "sm1-24ddcfbe0794fbb8d24bfbafc7ff92fc",
+            "purpose": "grid_buy",
+            "slot_id": "0",
+            "generation": 0,
+            "quantity": "10",
+            "limit_price": "9",
+            "quote_notional_cap": null
+          },
+          {
+            "client_order_id": "sm1-677988048c6ab1a63cefcb806a04da23",
+            "purpose": "grid_buy",
+            "slot_id": "1",
+            "generation": 0,
+            "quantity": "10",
+            "limit_price": "10",
+            "quote_notional_cap": null
+          },
+          {
+            "client_order_id": "sm1-1a198d3c1cad7de9499b8c759159fa39",
+            "purpose": "grid_sell",
+            "slot_id": "1",
+            "generation": 0,
+            "quantity": "10",
+            "limit_price": "11",
+            "quote_notional_cap": null
+          },
+          {
+            "client_order_id": "sm1-f41901446a736c159909d9a0f237569c",
+            "purpose": "grid_buy",
+            "slot_id": "1",
+            "generation": 1,
+            "quantity": "10",
+            "limit_price": "10",
+            "quote_notional_cap": null
+          }
+        ],
+        "fills": [
+          {
+            "client_order_id": "sm1-677988048c6ab1a63cefcb806a04da23",
+            "purpose": "grid_buy",
+            "side": "buy",
+            "quantity": "10",
+            "price": "10",
+            "fees": [
+              {
+                "asset": "BNB",
+                "quantity": "0.001"
+              }
+            ]
+          },
+          {
+            "client_order_id": "sm1-1a198d3c1cad7de9499b8c759159fa39",
+            "purpose": "grid_sell",
+            "side": "sell",
+            "quantity": "10",
+            "price": "11",
+            "fees": [
+              {
+                "asset": "BNB",
+                "quantity": "0.0011"
+              }
+            ]
+          }
+        ],
+        "order_states": [
+          {
+            "client_order_id": "sm1-24ddcfbe0794fbb8d24bfbafc7ff92fc",
+            "generation": 0,
+            "status": "accepted",
+            "unknown_outcome": null,
+            "filled_quantity": "0",
+            "reserved_quote": "90",
+            "reserved_base": "0"
+          },
+          {
+            "client_order_id": "sm1-677988048c6ab1a63cefcb806a04da23",
+            "generation": 0,
+            "status": "filled",
+            "unknown_outcome": null,
+            "filled_quantity": "10",
+            "reserved_quote": "0",
+            "reserved_base": "0"
+          },
+          {
+            "client_order_id": "sm1-1a198d3c1cad7de9499b8c759159fa39",
+            "generation": 0,
+            "status": "filled",
+            "unknown_outcome": null,
+            "filled_quantity": "10",
+            "reserved_quote": "0",
+            "reserved_base": "0"
+          },
+          {
+            "client_order_id": "sm1-f41901446a736c159909d9a0f237569c",
+            "generation": 1,
+            "status": "accepted",
+            "unknown_outcome": null,
+            "filled_quantity": "0",
+            "reserved_quote": "100",
+            "reserved_base": "0"
+          }
+        ]
+      }
+    }
+  ]
+}

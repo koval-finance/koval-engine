@@ -6,6 +6,11 @@ plugins depend on. Plan first, change little.
 
 ## Domains
 
+Native `exec.spot_dca` / `exec.spot_grid` use a separate `SpotRecipeRequest`
+terminal and confirmed `SpotRecipeStatus` feedback. They cannot be mixed with
+single-entry/position-exit terminals. See [bounded Spot execution](spot_multi_order.md)
+for their required ports, parameters, static host requirements and paper API.
+
 `Domain` (`src/koval/strategy/graph/domains.py`) has six members, each with a
 rank. `SOURCE` (rank 0) is internal — it feeds market data into the graph; no
 author-written node currently uses it. The five domains an author writes

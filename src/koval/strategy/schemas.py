@@ -15,9 +15,66 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_serializer, model_validator
 
+from koval.engine.spot_numbers import InputNumber
+
 
 class _StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
+
+
+class _SpotParams(_StrictModel):
+    @model_validator(mode="before")
+    @classmethod
+    def strict_version(cls, value):
+        if isinstance(value, dict) and isinstance(value.get("version"), bool):
+            raise ValueError("Spot version must be integer 1")
+        return value
+
+
+class SpotDcaParams(_SpotParams):
+    """Bounded price-drop basket; all cash/cost assumptions are explicit."""
+
+    version: Literal[1] = 1
+    budget_quote: InputNumber = Field(gt=0)
+    fee_reserve_quote: InputNumber
+    base_quote: InputNumber = Field(gt=0)
+    addition_quote: InputNumber = Field(gt=0)
+    max_additions: int = Field(strict=True, ge=0, le=64)
+    deviation_pct: InputNumber = Field(gt=0, lt=100)
+    take_profit_pct: InputNumber = Field(gt=0, le=1000)
+    stop_loss_pct: InputNumber = Field(gt=0, lt=100)
+
+    @model_validator(mode="after")
+    def bounded_ladder(self):
+        if self.max_additions * self.deviation_pct >= self.stop_loss_pct:
+            raise ValueError("DCA additions must remain above the basket stop")
+        if (
+            self.base_quote + self.max_additions * self.addition_quote + self.fee_reserve_quote
+            > self.budget_quote
+        ):
+            raise ValueError("DCA cash budget cannot fund all additions")
+        return self
+
+
+class SpotGridParams(_SpotParams):
+    """Fixed arithmetic buy-first grid, with finite slot count and allocation."""
+
+    version: Literal[1] = 1
+    budget_quote: InputNumber = Field(gt=0)
+    fee_reserve_quote: InputNumber
+    lower_price: InputNumber = Field(gt=0)
+    upper_price: InputNumber = Field(gt=0)
+    intervals: int = Field(strict=True, ge=1, le=64)
+    quantity_per_slot: InputNumber = Field(gt=0)
+    stop_price: InputNumber = Field(gt=0)
+
+    @model_validator(mode="after")
+    def bounded_range(self):
+        if not self.stop_price < self.lower_price < self.upper_price:
+            raise ValueError("Grid requires stop < lower < upper")
+        if self.fee_reserve_quote >= self.budget_quote:
+            raise ValueError("Grid fee reserve exhausts cash budget")
+        return self
 
 
 # ---------------------------------------------------------------------------

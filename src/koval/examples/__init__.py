@@ -36,4 +36,16 @@ def parity_fixtures() -> list[dict]:
     return [json.loads(path.read_text(encoding="utf-8")) for path in files]
 
 
-__all__ = ["EXAMPLES_DIR", "available_graphs", "example_path", "parity_fixtures"]
+def spot_multi_order_fixtures() -> list[dict]:
+    """Independent JSON acceptance cases for the additive Spot execution lane."""
+    files = sorted((EXAMPLES_DIR / "spot_multi_order").glob("*.json"))
+    return [json.loads(path.read_text(encoding="utf-8")) for path in files]
+
+
+__all__ = [
+    "EXAMPLES_DIR",
+    "available_graphs",
+    "example_path",
+    "parity_fixtures",
+    "spot_multi_order_fixtures",
+]

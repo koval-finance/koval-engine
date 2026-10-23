@@ -1,0 +1,997 @@
+{
+  "version": "koval_spot_fixture_v1",
+  "id": "deferred_fee_valuation",
+  "driver": "controller_events",
+  "ordering_policy": "open_low_high_close",
+  "graph": {
+    "blocks": [
+      {
+        "id": "start",
+        "type": "policy.ema_trend",
+        "params": {
+          "period": 2,
+          "direction": "bullish"
+        }
+      },
+      {
+        "id": "recipe",
+        "type": "exec.spot_dca",
+        "params": {
+          "version": 1,
+          "budget_quote": "1000",
+          "fee_reserve_quote": "0",
+          "base_quote": "100",
+          "addition_quote": "100",
+          "max_additions": 1,
+          "deviation_pct": "20",
+          "take_profit_pct": "10",
+          "stop_loss_pct": "30"
+        }
+      }
+    ],
+    "connections": [
+      {
+        "from": "start",
+        "from_port": "policy",
+        "to": "recipe",
+        "to_port": "start"
+      }
+    ]
+  },
+  "binding": {
+    "version": "koval_spot_multi_order_v1",
+    "account_id": "a-deferred_fee_valuation",
+    "session_id": "deferred_fee_valuation",
+    "symbol": "BTCUSDT",
+    "base_asset": "BTC",
+    "quote_asset": "USDT",
+    "exchange": "binance",
+    "market": "spot",
+    "mode": "paper",
+    "timeframe": "1m",
+    "graph_sha256": "ef68ca0791bd154ab040914992481d33a3ea16b5bb9c23081a7acc9e7b1b69d2",
+    "software_identity": "unreleased-control",
+    "policy_sha256": "d9b5e9a22f7e60f664dd85149288d237ca893ce56917a8ceece24b93bb47c078",
+    "instrument_sha256": "fb14daf30c80c540522ffa696726622d2e5f3c69e0f036e725c29b90ee6961cb",
+    "initial_quote_cash": "1000",
+    "end_of_data_policy": "stop_and_hold",
+    "evaluation_start_ms": null,
+    "evaluation_end_ms": null,
+    "initial_peak_equity": null
+  },
+  "recipe": {
+    "kind": "dca",
+    "params": {
+      "version": 1,
+      "budget_quote": "1000",
+      "fee_reserve_quote": "0",
+      "base_quote": "100",
+      "addition_quote": "100",
+      "max_additions": 1,
+      "deviation_pct": "20",
+      "take_profit_pct": "10",
+      "stop_loss_pct": "30"
+    }
+  },
+  "instrument": {
+    "version": "koval_spot_instrument_v1",
+    "evidence_id": "synthetic",
+    "symbol": "BTCUSDT",
+    "base_asset": "BTC",
+    "quote_asset": "USDT",
+    "exchange": "binance",
+    "market": "spot",
+    "source": "independent synthetic accounting control",
+    "status": "synthetic_fixture",
+    "effective_from_ms": 0,
+    "effective_to_ms": 1000000000,
+    "acquired_at_ms": 0,
+    "price_tick": "0.000000000000000001",
+    "quantity_step": "0.000000000000000001",
+    "market_quantity_step": "0.000000000000000001",
+    "minimum_quantity": "0.00000001",
+    "maximum_quantity": "1000000",
+    "minimum_notional": "0.000001",
+    "maximum_notional": "1000000",
+    "minimum_price": "0.00000001",
+    "maximum_price": "1000000",
+    "maximum_open_orders": 128,
+    "market_minimum_quantity": null,
+    "market_maximum_quantity": null,
+    "apply_notional_to_market": true,
+    "price_band_low": null,
+    "price_band_high": null,
+    "price_band_source": null,
+    "unknown_active_filters": []
+  },
+  "policy": {
+    "version": "koval_spot_ohlcv_v1",
+    "path": "open_low_high_close",
+    "policy_id": "explicit-control",
+    "maker_fee_bps": "10",
+    "taker_fee_bps": "10",
+    "fee_asset": "BNB",
+    "fee_source": "synthetic explicit zero fees",
+    "buy_quote_fee_cap_bps": "0",
+    "sell_base_fee_cap_bps": "0",
+    "spread_bps": "0",
+    "slippage_bps": "0",
+    "maximum_volume_participation": "1",
+    "expires_after_bars": null,
+    "third_asset_quote_price": "100",
+    "third_asset_allowance_quote": "10"
+  },
+  "instrument_content_sha256": "fb14daf30c80c540522ffa696726622d2e5f3c69e0f036e725c29b90ee6961cb",
+  "provenance": "synthetic independent accounting control; no observed venue filters or queue claims",
+  "observations": [
+    {
+      "kind": "closed_bar",
+      "payload": {
+        "bar_index": 0,
+        "close": "100",
+        "start": true
+      },
+      "mark": "100",
+      "expected": {
+        "quote_reserved": "200",
+        "order_states": [
+          {
+            "client_order_id": "sm1-8eed7d1332e4ec0a74fbbfd8e679c910",
+            "generation": 0,
+            "status": "pending",
+            "unknown_outcome": null,
+            "filled_quantity": "0",
+            "reserved_quote": "100",
+            "reserved_base": "0"
+          }
+        ],
+        "intents": [
+          {
+            "client_order_id": "sm1-8eed7d1332e4ec0a74fbbfd8e679c910",
+            "purpose": "base",
+            "slot_id": "base",
+            "generation": 0,
+            "quantity": null,
+            "limit_price": null,
+            "quote_notional_cap": "100"
+          }
+        ],
+        "fills": []
+      }
+    },
+    {
+      "kind": "executions",
+      "payload": {
+        "events": [
+          {
+            "event_id": "e1",
+            "account_id": "a-deferred_fee_valuation",
+            "session_id": "deferred_fee_valuation",
+            "symbol": "BTCUSDT",
+            "client_order_id": "sm1-8eed7d1332e4ec0a74fbbfd8e679c910",
+            "exchange_order_id": "sim-sm1-8eed7d1332e4ec0a74fbbfd8e679c910",
+            "generation": 0,
+            "source_sequence": 1,
+            "timestamp_ms": 1,
+            "side": "buy",
+            "purpose": "base",
+            "status": "accepted",
+            "quantity": "0",
+            "quote_notional": "0",
+            "cumulative_quantity": "0",
+            "cumulative_quote": "0",
+            "fees": []
+          }
+        ]
+      },
+      "mark": "100",
+      "expected": {
+        "quote_cash": "1000",
+        "order_states": [
+          {
+            "client_order_id": "sm1-8eed7d1332e4ec0a74fbbfd8e679c910",
+            "generation": 0,
+            "status": "accepted",
+            "unknown_outcome": null,
+            "filled_quantity": "0",
+            "reserved_quote": "100",
+            "reserved_base": "0"
+          }
+        ],
+        "intents": [
+          {
+            "client_order_id": "sm1-8eed7d1332e4ec0a74fbbfd8e679c910",
+            "purpose": "base",
+            "slot_id": "base",
+            "generation": 0,
+            "quantity": null,
+            "limit_price": null,
+            "quote_notional_cap": "100"
+          }
+        ],
+        "fills": []
+      }
+    },
+    {
+      "kind": "executions",
+      "payload": {
+        "events": [
+          {
+            "event_id": "e2",
+            "account_id": "a-deferred_fee_valuation",
+            "session_id": "deferred_fee_valuation",
+            "symbol": "BTCUSDT",
+            "client_order_id": "sm1-8eed7d1332e4ec0a74fbbfd8e679c910",
+            "exchange_order_id": "sim-sm1-8eed7d1332e4ec0a74fbbfd8e679c910",
+            "generation": 0,
+            "source_sequence": 2,
+            "timestamp_ms": 2,
+            "side": "buy",
+            "purpose": "base",
+            "status": "filled",
+            "quantity": "1",
+            "quote_notional": "100",
+            "cumulative_quantity": "1",
+            "cumulative_quote": "100",
+            "fees": [
+              {
+                "asset": "BNB",
+                "quantity": ".001"
+              }
+            ],
+            "price": "100",
+            "trade_id": "t2"
+          }
+        ]
+      },
+      "mark": "100",
+      "expected": {
+        "quote_cash": "900",
+        "base_quantity": "1",
+        "net_equity": null,
+        "order_states": [
+          {
+            "client_order_id": "sm1-8eed7d1332e4ec0a74fbbfd8e679c910",
+            "generation": 0,
+            "status": "filled",
+            "unknown_outcome": null,
+            "filled_quantity": "1",
+            "reserved_quote": "0",
+            "reserved_base": "0"
+          },
+          {
+            "client_order_id": "sm1-e5a2e08661840cbbe3a087587aad8ce7",
+            "generation": 0,
+            "status": "pending",
+            "unknown_outcome": null,
+            "filled_quantity": "0",
+            "reserved_quote": "0",
+            "reserved_base": "1"
+          }
+        ],
+        "intents": [
+          {
+            "client_order_id": "sm1-8eed7d1332e4ec0a74fbbfd8e679c910",
+            "purpose": "base",
+            "slot_id": "base",
+            "generation": 0,
+            "quantity": null,
+            "limit_price": null,
+            "quote_notional_cap": "100"
+          },
+          {
+            "client_order_id": "sm1-e5a2e08661840cbbe3a087587aad8ce7",
+            "purpose": "target",
+            "slot_id": "basket",
+            "generation": 0,
+            "quantity": "1",
+            "limit_price": "110",
+            "quote_notional_cap": null
+          }
+        ],
+        "fills": [
+          {
+            "client_order_id": "sm1-8eed7d1332e4ec0a74fbbfd8e679c910",
+            "purpose": "base",
+            "side": "buy",
+            "quantity": "1",
+            "price": "100",
+            "fees": [
+              {
+                "asset": "BNB",
+                "quantity": ".001"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "kind": "submit_request",
+      "payload": {
+        "account_id": "a-deferred_fee_valuation",
+        "session_id": "deferred_fee_valuation",
+        "symbol": "BTCUSDT",
+        "intent_id": "sm1-7b36d896c38bedc133b749d7ae2a0418",
+        "client_order_id": "sm1-7b36d896c38bedc133b749d7ae2a0418",
+        "cycle_id": "c1",
+        "slot_id": "extra",
+        "generation": 0,
+        "side": "buy",
+        "purpose": "addition",
+        "order_type": "limit",
+        "quantity": "1",
+        "limit_price": "80",
+        "activation_bar": 1
+      },
+      "mark": "100",
+      "expected": {
+        "quote_cash": "900",
+        "net_equity": null,
+        "order_states": [
+          {
+            "client_order_id": "sm1-8eed7d1332e4ec0a74fbbfd8e679c910",
+            "generation": 0,
+            "status": "filled",
+            "unknown_outcome": null,
+            "filled_quantity": "1",
+            "reserved_quote": "0",
+            "reserved_base": "0"
+          },
+          {
+            "client_order_id": "sm1-e5a2e08661840cbbe3a087587aad8ce7",
+            "generation": 0,
+            "status": "pending",
+            "unknown_outcome": null,
+            "filled_quantity": "0",
+            "reserved_quote": "0",
+            "reserved_base": "1"
+          }
+        ],
+        "intents": [
+          {
+            "client_order_id": "sm1-8eed7d1332e4ec0a74fbbfd8e679c910",
+            "purpose": "base",
+            "slot_id": "base",
+            "generation": 0,
+            "quantity": null,
+            "limit_price": null,
+            "quote_notional_cap": "100"
+          },
+          {
+            "client_order_id": "sm1-e5a2e08661840cbbe3a087587aad8ce7",
+            "purpose": "target",
+            "slot_id": "basket",
+            "generation": 0,
+            "quantity": "1",
+            "limit_price": "110",
+            "quote_notional_cap": null
+          }
+        ],
+        "fills": [
+          {
+            "client_order_id": "sm1-8eed7d1332e4ec0a74fbbfd8e679c910",
+            "purpose": "base",
+            "side": "buy",
+            "quantity": "1",
+            "price": "100",
+            "fees": [
+              {
+                "asset": "BNB",
+                "quantity": ".001"
+              }
+            ]
+          }
+        ]
+      },
+      "expect_error": "fee"
+    },
+    {
+      "kind": "executions",
+      "payload": {
+        "events": [
+          {
+            "event_id": "e3",
+            "account_id": "a-deferred_fee_valuation",
+            "session_id": "deferred_fee_valuation",
+            "symbol": "BTCUSDT",
+            "client_order_id": "sm1-e5a2e08661840cbbe3a087587aad8ce7",
+            "exchange_order_id": "sim-sm1-e5a2e08661840cbbe3a087587aad8ce7",
+            "generation": 0,
+            "source_sequence": 3,
+            "timestamp_ms": 3,
+            "side": "sell",
+            "purpose": "target",
+            "status": "accepted",
+            "quantity": "0",
+            "quote_notional": "0",
+            "cumulative_quantity": "0",
+            "cumulative_quote": "0",
+            "fees": []
+          },
+          {
+            "event_id": "e4",
+            "account_id": "a-deferred_fee_valuation",
+            "session_id": "deferred_fee_valuation",
+            "symbol": "BTCUSDT",
+            "client_order_id": "sm1-e5a2e08661840cbbe3a087587aad8ce7",
+            "exchange_order_id": "sim-sm1-e5a2e08661840cbbe3a087587aad8ce7",
+            "generation": 0,
+            "source_sequence": 4,
+            "timestamp_ms": 4,
+            "side": "sell",
+            "purpose": "target",
+            "status": "partial",
+            "quantity": "0.5",
+            "quote_notional": "55",
+            "cumulative_quantity": "0.5",
+            "cumulative_quote": "55",
+            "fees": [],
+            "price": "110",
+            "trade_id": "t4"
+          }
+        ]
+      },
+      "mark": "110",
+      "expected": {
+        "quote_cash": "955",
+        "base_quantity": ".5",
+        "inventory_cost": "50",
+        "net_equity": null,
+        "order_states": [
+          {
+            "client_order_id": "sm1-8eed7d1332e4ec0a74fbbfd8e679c910",
+            "generation": 0,
+            "status": "filled",
+            "unknown_outcome": null,
+            "filled_quantity": "1",
+            "reserved_quote": "0",
+            "reserved_base": "0"
+          },
+          {
+            "client_order_id": "sm1-e5a2e08661840cbbe3a087587aad8ce7",
+            "generation": 0,
+            "status": "cancel_pending",
+            "unknown_outcome": null,
+            "filled_quantity": "0.5",
+            "reserved_quote": "0",
+            "reserved_base": "0.5"
+          }
+        ],
+        "intents": [
+          {
+            "client_order_id": "sm1-8eed7d1332e4ec0a74fbbfd8e679c910",
+            "purpose": "base",
+            "slot_id": "base",
+            "generation": 0,
+            "quantity": null,
+            "limit_price": null,
+            "quote_notional_cap": "100"
+          },
+          {
+            "client_order_id": "sm1-e5a2e08661840cbbe3a087587aad8ce7",
+            "purpose": "target",
+            "slot_id": "basket",
+            "generation": 0,
+            "quantity": "1",
+            "limit_price": "110",
+            "quote_notional_cap": null
+          }
+        ],
+        "fills": [
+          {
+            "client_order_id": "sm1-8eed7d1332e4ec0a74fbbfd8e679c910",
+            "purpose": "base",
+            "side": "buy",
+            "quantity": "1",
+            "price": "100",
+            "fees": [
+              {
+                "asset": "BNB",
+                "quantity": ".001"
+              }
+            ]
+          },
+          {
+            "client_order_id": "sm1-e5a2e08661840cbbe3a087587aad8ce7",
+            "purpose": "target",
+            "side": "sell",
+            "quantity": "0.5",
+            "price": "110",
+            "fees": []
+          }
+        ]
+      }
+    },
+    {
+      "kind": "fee_valuation",
+      "payload": {
+        "valuation_id": "value",
+        "account_id": "a-deferred_fee_valuation",
+        "session_id": "deferred_fee_valuation",
+        "fee_id": "e2:0",
+        "asset": "BNB",
+        "quantity": ".001",
+        "quote_value": ".1",
+        "valuation_timestamp_ms": 10,
+        "source": "synthetic valuation",
+        "evidence_id": "fx",
+        "content_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "mark": "110",
+      "expected": {
+        "inventory_cost": "50.05",
+        "realized_profit": "4.95",
+        "net_equity": "1009.9",
+        "order_states": [
+          {
+            "client_order_id": "sm1-8eed7d1332e4ec0a74fbbfd8e679c910",
+            "generation": 0,
+            "status": "filled",
+            "unknown_outcome": null,
+            "filled_quantity": "1",
+            "reserved_quote": "0",
+            "reserved_base": "0"
+          },
+          {
+            "client_order_id": "sm1-e5a2e08661840cbbe3a087587aad8ce7",
+            "generation": 0,
+            "status": "cancel_pending",
+            "unknown_outcome": null,
+            "filled_quantity": "0.5",
+            "reserved_quote": "0",
+            "reserved_base": "0.5"
+          }
+        ],
+        "intents": [
+          {
+            "client_order_id": "sm1-8eed7d1332e4ec0a74fbbfd8e679c910",
+            "purpose": "base",
+            "slot_id": "base",
+            "generation": 0,
+            "quantity": null,
+            "limit_price": null,
+            "quote_notional_cap": "100"
+          },
+          {
+            "client_order_id": "sm1-e5a2e08661840cbbe3a087587aad8ce7",
+            "purpose": "target",
+            "slot_id": "basket",
+            "generation": 0,
+            "quantity": "1",
+            "limit_price": "110",
+            "quote_notional_cap": null
+          }
+        ],
+        "fills": [
+          {
+            "client_order_id": "sm1-8eed7d1332e4ec0a74fbbfd8e679c910",
+            "purpose": "base",
+            "side": "buy",
+            "quantity": "1",
+            "price": "100",
+            "fees": [
+              {
+                "asset": "BNB",
+                "quantity": ".001"
+              }
+            ]
+          },
+          {
+            "client_order_id": "sm1-e5a2e08661840cbbe3a087587aad8ce7",
+            "purpose": "target",
+            "side": "sell",
+            "quantity": "0.5",
+            "price": "110",
+            "fees": []
+          }
+        ]
+      }
+    },
+    {
+      "kind": "executions",
+      "payload": {
+        "events": [
+          {
+            "event_id": "e5",
+            "account_id": "a-deferred_fee_valuation",
+            "session_id": "deferred_fee_valuation",
+            "symbol": "BTCUSDT",
+            "client_order_id": "sm1-e5a2e08661840cbbe3a087587aad8ce7",
+            "exchange_order_id": "sim-sm1-e5a2e08661840cbbe3a087587aad8ce7",
+            "generation": 0,
+            "source_sequence": 5,
+            "timestamp_ms": 5,
+            "side": "sell",
+            "purpose": "target",
+            "status": "canceled",
+            "quantity": "0",
+            "quote_notional": "0",
+            "cumulative_quantity": "0.5",
+            "cumulative_quote": "55",
+            "fees": []
+          }
+        ]
+      },
+      "mark": "100",
+      "expected": {
+        "base_quantity": ".5",
+        "order_states": [
+          {
+            "client_order_id": "sm1-8eed7d1332e4ec0a74fbbfd8e679c910",
+            "generation": 0,
+            "status": "filled",
+            "unknown_outcome": null,
+            "filled_quantity": "1",
+            "reserved_quote": "0",
+            "reserved_base": "0"
+          },
+          {
+            "client_order_id": "sm1-e5a2e08661840cbbe3a087587aad8ce7",
+            "generation": 0,
+            "status": "canceled",
+            "unknown_outcome": null,
+            "filled_quantity": "0.5",
+            "reserved_quote": "0",
+            "reserved_base": "0.5"
+          }
+        ],
+        "intents": [
+          {
+            "client_order_id": "sm1-8eed7d1332e4ec0a74fbbfd8e679c910",
+            "purpose": "base",
+            "slot_id": "base",
+            "generation": 0,
+            "quantity": null,
+            "limit_price": null,
+            "quote_notional_cap": "100"
+          },
+          {
+            "client_order_id": "sm1-e5a2e08661840cbbe3a087587aad8ce7",
+            "purpose": "target",
+            "slot_id": "basket",
+            "generation": 0,
+            "quantity": "1",
+            "limit_price": "110",
+            "quote_notional_cap": null
+          }
+        ],
+        "fills": [
+          {
+            "client_order_id": "sm1-8eed7d1332e4ec0a74fbbfd8e679c910",
+            "purpose": "base",
+            "side": "buy",
+            "quantity": "1",
+            "price": "100",
+            "fees": [
+              {
+                "asset": "BNB",
+                "quantity": ".001"
+              }
+            ]
+          },
+          {
+            "client_order_id": "sm1-e5a2e08661840cbbe3a087587aad8ce7",
+            "purpose": "target",
+            "side": "sell",
+            "quantity": "0.5",
+            "price": "110",
+            "fees": []
+          }
+        ]
+      }
+    },
+    {
+      "kind": "simulator_reconciliation",
+      "payload": {},
+      "mark": "100",
+      "expected": {
+        "base_reserved": ".5",
+        "quote_reserved": "0",
+        "order_states": [
+          {
+            "client_order_id": "sm1-8eed7d1332e4ec0a74fbbfd8e679c910",
+            "generation": 0,
+            "status": "filled",
+            "unknown_outcome": null,
+            "filled_quantity": "1",
+            "reserved_quote": "0",
+            "reserved_base": "0"
+          },
+          {
+            "client_order_id": "sm1-e5a2e08661840cbbe3a087587aad8ce7",
+            "generation": 0,
+            "status": "canceled",
+            "unknown_outcome": null,
+            "filled_quantity": "0.5",
+            "reserved_quote": "0",
+            "reserved_base": "0"
+          },
+          {
+            "client_order_id": "sm1-093b534f37d795f067becd0697b27a94",
+            "generation": 0,
+            "status": "pending",
+            "unknown_outcome": null,
+            "filled_quantity": "0",
+            "reserved_quote": "0",
+            "reserved_base": "0.5"
+          }
+        ],
+        "intents": [
+          {
+            "client_order_id": "sm1-8eed7d1332e4ec0a74fbbfd8e679c910",
+            "purpose": "base",
+            "slot_id": "base",
+            "generation": 0,
+            "quantity": null,
+            "limit_price": null,
+            "quote_notional_cap": "100"
+          },
+          {
+            "client_order_id": "sm1-e5a2e08661840cbbe3a087587aad8ce7",
+            "purpose": "target",
+            "slot_id": "basket",
+            "generation": 0,
+            "quantity": "1",
+            "limit_price": "110",
+            "quote_notional_cap": null
+          },
+          {
+            "client_order_id": "sm1-093b534f37d795f067becd0697b27a94",
+            "purpose": "flatten",
+            "slot_id": "basket",
+            "generation": 0,
+            "quantity": "0.5",
+            "limit_price": null,
+            "quote_notional_cap": null
+          }
+        ],
+        "fills": [
+          {
+            "client_order_id": "sm1-8eed7d1332e4ec0a74fbbfd8e679c910",
+            "purpose": "base",
+            "side": "buy",
+            "quantity": "1",
+            "price": "100",
+            "fees": [
+              {
+                "asset": "BNB",
+                "quantity": ".001"
+              }
+            ]
+          },
+          {
+            "client_order_id": "sm1-e5a2e08661840cbbe3a087587aad8ce7",
+            "purpose": "target",
+            "side": "sell",
+            "quantity": "0.5",
+            "price": "110",
+            "fees": []
+          }
+        ]
+      }
+    },
+    {
+      "kind": "executions",
+      "payload": {
+        "events": [
+          {
+            "event_id": "e6",
+            "account_id": "a-deferred_fee_valuation",
+            "session_id": "deferred_fee_valuation",
+            "symbol": "BTCUSDT",
+            "client_order_id": "sm1-093b534f37d795f067becd0697b27a94",
+            "exchange_order_id": "sim-sm1-093b534f37d795f067becd0697b27a94",
+            "generation": 0,
+            "source_sequence": 6,
+            "timestamp_ms": 6,
+            "side": "sell",
+            "purpose": "flatten",
+            "status": "filled",
+            "quantity": "0.5",
+            "quote_notional": "55",
+            "cumulative_quantity": "0.5",
+            "cumulative_quote": "55",
+            "fees": [],
+            "price": "110",
+            "trade_id": "t6"
+          }
+        ]
+      },
+      "mark": "100",
+      "expected": {
+        "quote_cash": "1010",
+        "base_quantity": "0",
+        "realized_profit": "9.9",
+        "net_equity": "1009.9",
+        "order_states": [
+          {
+            "client_order_id": "sm1-8eed7d1332e4ec0a74fbbfd8e679c910",
+            "generation": 0,
+            "status": "filled",
+            "unknown_outcome": null,
+            "filled_quantity": "1",
+            "reserved_quote": "0",
+            "reserved_base": "0"
+          },
+          {
+            "client_order_id": "sm1-e5a2e08661840cbbe3a087587aad8ce7",
+            "generation": 0,
+            "status": "canceled",
+            "unknown_outcome": null,
+            "filled_quantity": "0.5",
+            "reserved_quote": "0",
+            "reserved_base": "0"
+          },
+          {
+            "client_order_id": "sm1-093b534f37d795f067becd0697b27a94",
+            "generation": 0,
+            "status": "filled",
+            "unknown_outcome": null,
+            "filled_quantity": "0.5",
+            "reserved_quote": "0",
+            "reserved_base": "0"
+          }
+        ],
+        "intents": [
+          {
+            "client_order_id": "sm1-8eed7d1332e4ec0a74fbbfd8e679c910",
+            "purpose": "base",
+            "slot_id": "base",
+            "generation": 0,
+            "quantity": null,
+            "limit_price": null,
+            "quote_notional_cap": "100"
+          },
+          {
+            "client_order_id": "sm1-e5a2e08661840cbbe3a087587aad8ce7",
+            "purpose": "target",
+            "slot_id": "basket",
+            "generation": 0,
+            "quantity": "1",
+            "limit_price": "110",
+            "quote_notional_cap": null
+          },
+          {
+            "client_order_id": "sm1-093b534f37d795f067becd0697b27a94",
+            "purpose": "flatten",
+            "slot_id": "basket",
+            "generation": 0,
+            "quantity": "0.5",
+            "limit_price": null,
+            "quote_notional_cap": null
+          }
+        ],
+        "fills": [
+          {
+            "client_order_id": "sm1-8eed7d1332e4ec0a74fbbfd8e679c910",
+            "purpose": "base",
+            "side": "buy",
+            "quantity": "1",
+            "price": "100",
+            "fees": [
+              {
+                "asset": "BNB",
+                "quantity": ".001"
+              }
+            ]
+          },
+          {
+            "client_order_id": "sm1-e5a2e08661840cbbe3a087587aad8ce7",
+            "purpose": "target",
+            "side": "sell",
+            "quantity": "0.5",
+            "price": "110",
+            "fees": []
+          },
+          {
+            "client_order_id": "sm1-093b534f37d795f067becd0697b27a94",
+            "purpose": "flatten",
+            "side": "sell",
+            "quantity": "0.5",
+            "price": "110",
+            "fees": []
+          }
+        ]
+      }
+    },
+    {
+      "kind": "simulator_reconciliation",
+      "payload": {},
+      "mark": "100",
+      "expected": {
+        "phase": "complete",
+        "realized_profit": "9.9",
+        "order_states": [
+          {
+            "client_order_id": "sm1-8eed7d1332e4ec0a74fbbfd8e679c910",
+            "generation": 0,
+            "status": "filled",
+            "unknown_outcome": null,
+            "filled_quantity": "1",
+            "reserved_quote": "0",
+            "reserved_base": "0"
+          },
+          {
+            "client_order_id": "sm1-e5a2e08661840cbbe3a087587aad8ce7",
+            "generation": 0,
+            "status": "canceled",
+            "unknown_outcome": null,
+            "filled_quantity": "0.5",
+            "reserved_quote": "0",
+            "reserved_base": "0"
+          },
+          {
+            "client_order_id": "sm1-093b534f37d795f067becd0697b27a94",
+            "generation": 0,
+            "status": "filled",
+            "unknown_outcome": null,
+            "filled_quantity": "0.5",
+            "reserved_quote": "0",
+            "reserved_base": "0"
+          }
+        ],
+        "intents": [
+          {
+            "client_order_id": "sm1-8eed7d1332e4ec0a74fbbfd8e679c910",
+            "purpose": "base",
+            "slot_id": "base",
+            "generation": 0,
+            "quantity": null,
+            "limit_price": null,
+            "quote_notional_cap": "100"
+          },
+          {
+            "client_order_id": "sm1-e5a2e08661840cbbe3a087587aad8ce7",
+            "purpose": "target",
+            "slot_id": "basket",
+            "generation": 0,
+            "quantity": "1",
+            "limit_price": "110",
+            "quote_notional_cap": null
+          },
+          {
+            "client_order_id": "sm1-093b534f37d795f067becd0697b27a94",
+            "purpose": "flatten",
+            "slot_id": "basket",
+            "generation": 0,
+            "quantity": "0.5",
+            "limit_price": null,
+            "quote_notional_cap": null
+          }
+        ],
+        "fills": [
+          {
+            "client_order_id": "sm1-8eed7d1332e4ec0a74fbbfd8e679c910",
+            "purpose": "base",
+            "side": "buy",
+            "quantity": "1",
+            "price": "100",
+            "fees": [
+              {
+                "asset": "BNB",
+                "quantity": ".001"
+              }
+            ]
+          },
+          {
+            "client_order_id": "sm1-e5a2e08661840cbbe3a087587aad8ce7",
+            "purpose": "target",
+            "side": "sell",
+            "quantity": "0.5",
+            "price": "110",
+            "fees": []
+          },
+          {
+            "client_order_id": "sm1-093b534f37d795f067becd0697b27a94",
+            "purpose": "flatten",
+            "side": "sell",
+            "quantity": "0.5",
+            "price": "110",
+            "fees": []
+          }
+        ]
+      }
+    }
+  ]
+}

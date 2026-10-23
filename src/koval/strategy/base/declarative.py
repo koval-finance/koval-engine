@@ -108,6 +108,10 @@ class DeclarativeStrategy:
     def on_close_position(self, trade_id: int, result: dict) -> None:
         pass
 
+    def get_spot_recipe_request(self):
+        """Multi-order hosts consume a separate recipe; old strategies emit none."""
+        return None
+
     def on_sl_update(self, trade_id: int) -> float | None:
         """Return new SL price, or None to keep current."""
         return None

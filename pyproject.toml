@@ -71,6 +71,8 @@ koval = [
     "examples/parity/*.json",
     "examples/runtime/*.json",
     "examples/parity/CHECKSUMS.txt",
+    "examples/spot_multi_order/*.json",
+    "examples/spot_multi_order/CHECKSUMS.txt",
 ]
 
 [tool.pytest.ini_options]

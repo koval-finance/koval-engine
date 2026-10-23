@@ -106,6 +106,8 @@ def negotiate_execution_capabilities(
     if boundaries is not None and boundaries.initial_balance != spec.initial_capital:
         raise ValueError("runtime initial_balance must match initial_capital")
     requested_version = int(spec.execution_contract_version)
+    if "spot_multi_order_v1" in graph_execution_capabilities(spec.graph) and requested_version != 2:
+        raise ProtocolVersionError("Spot multi-order graphs require execution contract v2")
     if requested_version not in offered.execution_contract_versions:
         raise ProtocolVersionError(
             f"execution contract v{requested_version} is not offered by the engine"

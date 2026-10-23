@@ -4,7 +4,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from koval.strategy.graph.entities import Entity, OrderRequest, PositionExitRequest, TradingIntent
+from koval.strategy.graph.entities import (
+    Entity,
+    OrderRequest,
+    PositionExitRequest,
+    SpotRecipeRequest,
+    TradingIntent,
+)
 from koval.strategy.graph.node import BarContext, GraphNode
 from koval.strategy.graph.registry import NODE_CATALOG
 from koval.strategy.graph.state_store import NodeStateStore
@@ -22,6 +28,7 @@ class StepResult:
     orders: list[OrderRequest] = field(default_factory=list)
     decision_context: dict | None = None
     position_exits: list[PositionExitRequest] = field(default_factory=list)
+    spot_recipes: list[SpotRecipeRequest] = field(default_factory=list)
 
 
 @dataclass
@@ -121,6 +128,12 @@ class GraphExecutor:
                     # A terminal declaration is an explicit execution boundary.
                     # Unconsumed draft/pricing/sizing outputs never leave the graph.
                     result.orders.append(ent)
+                elif (
+                    isinstance(ent, SpotRecipeRequest)
+                    and node.spec.output_ports[port_name].terminal
+                    and (nid, port_name) not in self._consumed_ports
+                ):
+                    result.spot_recipes.append(ent)
                 elif (
                     isinstance(ent, PositionExitRequest)
                     and node.spec.output_ports[port_name].terminal

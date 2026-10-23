@@ -13,6 +13,7 @@ For the typed-graph contracts specifically, see
 | `src/koval/engine/protection.py` | shared validation of a dynamic protective-bracket snapshot |
 | `src/koval/exchanges/binance_algo.py` | conditional-order translation and actual child-order lookup through the sandbox transport |
 | `src/koval/engine/spot_contract.py`, `spot_account.py`, `spot_execution.py` | injected Spot Testnet port, Decimal accounting and reconciled lifecycle; no transport |
+| `src/koval/engine/spot_multi_order/` | pure bounded DCA/Grid, independent reservations and dedicated paper driver; no transport |
 | `src/koval/engine/live_engine.py` | the bar loop for paper and sandbox sessions |
 | `src/koval/engine/live_feed.py` | replay/polling feeds, continuity checks, bounded outage retries, and between-bar supervision |
 | `src/koval/engine/paper_broker.py` | simulated bracket/OCO fills with pessimistic ambiguous-bar resolution |

@@ -8,5 +8,6 @@ from koval.strategy.nodes import (  # noqa: F401
     interp,
     policy,
     scoring,
+    spot_recipes,
     state,
 )

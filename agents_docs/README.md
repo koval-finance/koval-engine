@@ -12,6 +12,7 @@ depth. Load only what the task calls for.
 | [agent_workflow.md](agent_workflow.md) | the work loop, the git policy, the hard rules |
 | [architecture.md](architecture.md) | module map, execution flow, the plugin seam |
 | [spot_testnet_contract.md](spot_testnet_contract.md) | injected Spot Testnet identity, accounting, protection and public recovery |
+| [spot_multi_order.md](spot_multi_order.md) | bounded DCA/Grid, dedicated paper lane, reservations and adapter fixtures |
 | [runtime_contract.md](runtime_contract.md) | runtime boundaries, market, evidence, identity and sandbox contracts |
 | [realism_review.md](realism_review.md) | execution review findings, primary sources and acceptance limits |
 | [graph_contracts.md](graph_contracts.md) | domains, ports, entities, validation boundaries |

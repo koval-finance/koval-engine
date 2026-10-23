@@ -55,6 +55,7 @@ class BarContext:
     history_start_ms: int | None = None
     timeframe: str | None = None
     position_id: int | None = None
+    spot_runtime: dict | None = None
 
 
 # Cross-bar mutable state for one node. Plain dict so it stays picklable.

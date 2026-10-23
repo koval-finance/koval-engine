@@ -129,6 +129,35 @@ class PositionExitRequest(Entity):
     decision_context: dict[str, Any] | None = None
 
 
+class SpotRecipeRequest(Entity):
+    """Versioned recipe boundary, separate from single-entry orders."""
+
+    recipe_version: Literal[1] = 1
+    kind: Literal["dca", "grid"]
+    params: dict[str, Any]
+    start: bool
+    stop_hold: bool = False
+    stop_flatten: bool = False
+
+
+class SpotRecipeStatus(Entity):
+    """Confirmed read-only account and controller feedback."""
+
+    kind: Literal["dca", "grid"]
+    phase: str
+    cycle_id: str
+    anchor: str | None = None
+    stop: str | None = None
+    target: str | None = None
+    net_inventory: str
+    free_quote: str
+    reserved_quote: str
+    free_base: str
+    reserved_base: str
+    observation_id: str
+    containment_reason: str | None = None
+
+
 class OrderExecution(Entity):
     """EXECUTION — fill/ack feedback feeding Account State."""
 

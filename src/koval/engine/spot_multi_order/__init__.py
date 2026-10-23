@@ -1,0 +1,77 @@
+"""Public cash-funded multi-order Spot contract. No venue transport or plugin imports."""
+
+from .account import (
+    apply_spot_event,
+    apply_spot_fee_valuation,
+    cancel_spot_order,
+    paper_reconciliation,
+    reconcile_spot_state,
+    replace_spot_order,
+    submit_spot_order,
+)
+from .conformance import SpotConformanceResultV1, compare_spot_execution_reports, run_spot_fixture
+from .controllers import dca_decide, grid_decide
+from .execution import advance_spot
+from .models import (
+    SpotAccountingViolation,
+    SpotAccountStateV1,
+    SpotBindingV1,
+    SpotCancelIntentV1,
+    SpotControllerStateV1,
+    SpotDecisionV1,
+    SpotExecutionEventV1,
+    SpotFeeV1,
+    SpotFeeValuationV1,
+    SpotFillPolicyV1,
+    SpotInstrumentEvidenceV1,
+    SpotObservationV1,
+    SpotOrderIntentV1,
+    SpotRecipeV1,
+    SpotReconciliationV1,
+    SpotReplaceIntentV1,
+    SpotSessionStateV1,
+    SpotTransitionV1,
+    spot_content_hash,
+)
+from .paper import SpotPaperSessionV1
+from .state import create_spot_session, export_spot_state, restore_spot_state, spot_execution_report
+
+__all__ = [
+    "SpotConformanceResultV1",
+    "compare_spot_execution_reports",
+    "run_spot_fixture",
+    "SpotCancelIntentV1",
+    "SpotReplaceIntentV1",
+    "replace_spot_order",
+    "SpotAccountingViolation",
+    "SpotAccountStateV1",
+    "SpotBindingV1",
+    "SpotControllerStateV1",
+    "SpotDecisionV1",
+    "SpotExecutionEventV1",
+    "SpotFeeV1",
+    "SpotFeeValuationV1",
+    "SpotFillPolicyV1",
+    "SpotInstrumentEvidenceV1",
+    "SpotObservationV1",
+    "SpotOrderIntentV1",
+    "SpotPaperSessionV1",
+    "SpotRecipeV1",
+    "SpotReconciliationV1",
+    "SpotSessionStateV1",
+    "SpotTransitionV1",
+    "advance_spot",
+    "apply_spot_event",
+    "apply_spot_fee_valuation",
+    "cancel_spot_order",
+    "create_spot_session",
+    "dca_decide",
+    "export_spot_state",
+    "grid_decide",
+    "paper_reconciliation",
+    "reconcile_spot_state",
+    "restore_spot_state",
+    "spot_content_hash",
+    "spot_execution_report",
+    "submit_spot_order",
+]
