@@ -12,12 +12,12 @@ single-entry/position-exit terminals. See [bounded Spot execution](spot_multi_or
 for their required ports, parameters, static host requirements and paper API.
 
 `Domain` (`src/koval/strategy/graph/domains.py`) has six members, each with a
-rank. `SOURCE` (rank 0) is internal — it feeds market data into the graph; no
-author-written node currently uses it. The five domains an author writes
-nodes for:
+rank. `source.value` exposes primary historical measurements in SOURCE (rank 0).
+Authors can compose nodes across all six domains:
 
 | Domain | Role |
 |---|---|
+| SOURCE | provide one confirmed primary historical numeric component |
 | FACT | compute observations from market data — no opinions |
 | STATE | remember things across bars |
 | POLICY | decide whether and how to act |
@@ -258,3 +258,11 @@ strategy evaluator and must not be labeled recorded decision evidence. Callers
 must check the engine identity and compare overlapping recorded observations.
 Tests: `test_decision_evidence.py` and `test_strategy_series.py` under
 `tests/strategy/graph/`.
+
+## Historical scalar primitives
+
+`source.value`, `fact.compare`, `fact.cross`, `fact.distance` and
+`policy.from_condition` use new strict NumericValueV1/ConditionV1 entities.
+See [numeric values](numeric_values.md) for exact ports, parameters, formulas,
+readiness, primary ideal-close timing, bounded state and numeric_values_v1
+capability gates. Legacy entities, boolean policies and graph hashes are unchanged.

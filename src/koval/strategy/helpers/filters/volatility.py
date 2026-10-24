@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from koval.strategy.helpers._math import _atr
+from koval.strategy.helpers._math import _atr, _bollinger
 
 
 def atr_volatility_filter(
@@ -34,12 +34,8 @@ def bb_volatility_filter(
     """True if Bollinger Band bandwidth >= min_bandwidth_pct%."""
     if len(closes) < period:
         return False
-    recent = closes[-period:]
-    middle = float(recent.mean())
+    middle, _, upper, lower = _bollinger(closes, period, std_dev)
     if middle == 0.0:
         return False
-    std = float(recent.std())
-    upper = middle + std_dev * std
-    lower = middle - std_dev * std
     bandwidth_pct = (upper - lower) / middle * 100.0
     return bandwidth_pct >= min_bandwidth_pct

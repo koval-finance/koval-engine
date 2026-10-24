@@ -7,6 +7,14 @@ def graph_execution_capabilities(graph: dict) -> frozenset[str]:
     """Derive requirements without evaluating nodes or rewriting saved graphs."""
     required = set()
     for block in graph.get("blocks") or []:
+        if block.get("type") in {
+            "source.value",
+            "fact.compare",
+            "fact.cross",
+            "fact.distance",
+            "policy.from_condition",
+        }:
+            required.add("numeric_values_v1")
         if block.get("type") in {"exec.spot_dca", "exec.spot_grid"}:
             required.update(
                 {

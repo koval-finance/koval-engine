@@ -15,6 +15,7 @@ depth. Load only what the task calls for.
 | [spot_multi_order.md](spot_multi_order.md) | bounded DCA/Grid, dedicated paper lane, reservations and adapter fixtures |
 | [runtime_contract.md](runtime_contract.md) | runtime boundaries, market, evidence, identity and sandbox contracts |
 | [realism_review.md](realism_review.md) | execution review findings, primary sources and acceptance limits |
+| [numeric_values.md](numeric_values.md) | primary historical scalar formulas, readiness, crossing state and host gates |
 | [graph_contracts.md](graph_contracts.md) | domains, ports, entities, validation boundaries |
 | [adding_a_block.md](adding_a_block.md) | the four pieces of a block, end to end |
 | [testing.md](testing.md) | suite layout, markers, what "tested" means |

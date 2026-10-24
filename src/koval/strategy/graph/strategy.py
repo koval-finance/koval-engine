@@ -16,6 +16,7 @@ from koval.strategy.graph.execution_capabilities import graph_execution_capabili
 from koval.strategy.graph.executor import GraphExecutor, StepResult
 from koval.strategy.graph.indicators import PreparedIndicators
 from koval.strategy.graph.node import BarContext
+from koval.strategy.graph.values import graph_required_history_bars
 from koval.strategy.helpers.exits.trailing import trailing_stop_price
 
 
@@ -53,6 +54,9 @@ def build_graph_strategy(
 
         def prepare_backtest(self, candles, *, history_bars: int) -> None:
             """Prepare only pure indicators; graph/account state remains untouched."""
+            required = graph_required_history_bars(typed_graph)
+            if history_bars < required:
+                raise ValueError(f"numeric graph requires at least {required} history bars")
             self._indicators = PreparedIndicators.build(typed_graph, candles, history_bars)
 
         def _ctx(self) -> BarContext:
@@ -101,6 +105,10 @@ def build_graph_strategy(
             if self.bar_index != self._stepped_bar:
                 self._result = self._executor.step(self._ctx())
                 self._stepped_bar = self.bar_index
+            elif self._result is None:
+                # Checkpoints hold post-bar state, not pending intents. Replaying
+                # the same bar would advance legacy temporal nodes twice.
+                self._result = StepResult()
             return self._result  # type: ignore[return-value]
 
         def _routed_side(self) -> str | None:

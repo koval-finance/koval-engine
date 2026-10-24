@@ -2,6 +2,8 @@
 
 from koval.strategy.nodes import (  # noqa: F401
     aggregator,
+    conditions,
+    cross,
     exec_pipeline,
     execution,
     fact,
@@ -10,4 +12,5 @@ from koval.strategy.nodes import (  # noqa: F401
     scoring,
     spot_recipes,
     state,
+    values,
 )

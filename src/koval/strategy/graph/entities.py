@@ -8,6 +8,7 @@ FACT/STATE carry ``strength`` (a measurement), never a probability of success.
 
 from __future__ import annotations
 
+from math import isfinite
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, model_serializer, model_validator
@@ -22,6 +23,74 @@ class Entity(BaseModel):
     bar_index: int
     timestamp_ms: int
     source_node_id: str
+
+
+ValueUnit = Literal["price_quote_per_base", "base_volume", "percent", "ratio", "dimensionless"]
+ValueReadiness = Literal["ready", "warming_up", "missing", "stale", "invalid"]
+
+
+class _ValueIdentityV1(Entity):
+    """New scalar contracts only; legacy entity defaults remain untouched."""
+
+    model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
+
+    unit: ValueUnit
+    symbol: str
+    timeframe: str | None
+    as_of_ms: int | None
+    available_at_ms: int | None
+    readiness: ValueReadiness
+    reason: str | None
+    formula_version: str
+    input_cursor: str | None
+
+    @model_validator(mode="after")
+    def _identity_contract(self):
+        if not self.formula_version:
+            raise ValueError("formula_version is required")
+        if any(t is not None and t < 0 for t in (self.as_of_ms, self.available_at_ms)):
+            raise ValueError("value clocks must be nonnegative")
+        if (
+            self.as_of_ms is not None
+            and self.available_at_ms is not None
+            and self.available_at_ms < self.as_of_ms
+        ):
+            raise ValueError("availability precedes input bar end")
+        if self.readiness == "ready":
+            if not self.symbol or not self.timeframe or not self.input_cursor:
+                raise ValueError("ready value requires identity and cursor")
+            if self.as_of_ms is None or self.available_at_ms is None or self.reason is not None:
+                raise ValueError("ready value requires clocks and no unavailable reason")
+        elif not self.reason:
+            raise ValueError("unavailable value requires a reason")
+        return self
+
+
+class NumericValueV1(_ValueIdentityV1):
+    """Versioned measurement: unavailable is null, never a fabricated number."""
+
+    value: float | None
+
+    @model_validator(mode="after")
+    def _numeric_contract(self):
+        if self.readiness == "ready":
+            if self.value is None or not isfinite(self.value):
+                raise ValueError("ready numeric value must be finite")
+        elif self.value is not None:
+            raise ValueError("unavailable numeric value must be null")
+        return self
+
+
+class ConditionV1(_ValueIdentityV1):
+    """Versioned predicate; its unit identifies the compared measurement."""
+
+    value: bool | None
+
+    @model_validator(mode="after")
+    def _condition_contract(self):
+        if (self.value is not None) != (self.readiness == "ready"):
+            raise ValueError("condition must be boolean exactly when ready")
+        return self
 
 
 class MarketEvent(Entity):

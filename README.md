@@ -281,3 +281,12 @@ timestamped **derived** RSI, EMA, MACD and ATR series from saved graph parameter
 and supplied candles. This is separate from the recorded decision snapshot.
 See [the graph contract](https://github.com/koval-finance/koval-engine/blob/main/agents_docs/graph_contracts.md) for timing and history
 semantics.
+
+### Historical numeric graph primitives
+
+Primary-feed OHLCV, EMA, ATR, Bollinger and previous-channel values can feed typed
+comparisons, signed distance and consecutive crossings. The explicit condition
+policy bridge can feed existing entry/position-exit consumers. These new graphs
+require `numeric_values_v1` from the historical host; MIT LiveEngine refuses them.
+See [numeric contracts](https://github.com/koval-finance/koval-engine/blob/main/agents_docs/numeric_values.md) for readiness, exact APIs,
+ideal-close timing, history budgets and execution limitations.

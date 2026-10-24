@@ -139,6 +139,49 @@ def validate_graph(graph: dict) -> None:
                     f"{port.max_connections} connection(s), got {count}"
                 )
 
+    _validate_scalar_connections(blocks, connections, incoming_counts)
+
+
+def _validate_scalar_connections(blocks, connections, incoming_counts):
+    """Parameter-dependent scalar variants fail during public graph assembly."""
+    units = {}
+    params_by_id = {}
+    for b in blocks:
+        kind, nid = b["type"], b["id"]
+        if kind not in {"source.value", "fact.compare", "fact.distance"}:
+            continue
+        p = NODE_CATALOG[kind].params_schema(**(b.get("params") or {}))
+        params_by_id[nid] = p
+        if kind == "source.value":
+            units[nid] = p.unit
+        if kind == "fact.distance":
+            units[nid] = "percent" if p.mode == "percent" else "ratio"
+        if kind == "fact.compare":
+            has_right = incoming_counts.get((nid, "right"), 0) == 1
+            literal_mode = p.operator == "between" or p.literal is not None
+            if has_right == literal_mode:
+                raise GraphValidationError(
+                    f"{nid}: choose right input or literal/between with units"
+                )
+        if kind == "fact.distance":
+            has_atr = incoming_counts.get((nid, "atr"), 0) == 1
+            if has_atr != (p.mode == "atr"):
+                raise GraphValidationError(f"{nid}: atr input is required only in atr mode")
+    # Source and distance units are statically known. Custom numeric producers
+    # still pass the same identity guards at evaluation time.
+    by_id = {b["id"]: b for b in blocks}
+    for b in blocks:
+        kind, nid = b["type"], b["id"]
+        if kind not in {"fact.compare", "fact.cross", "fact.distance"}:
+            continue
+        known = [units[c["from"]] for c in connections if c["to"] == nid and c["from"] in units]
+        if kind == "fact.compare" and params_by_id[nid].unit is not None:
+            known.append(params_by_id[nid].unit)
+        if len(set(known)) > 1 or (
+            kind == "fact.distance" and any(u != "price_quote_per_base" for u in known)
+        ):
+            raise GraphValidationError(f"{by_id[nid]['id']}: scalar unit identity mismatch")
+
 
 def _find_cycle(ids: set[str], edges: list[tuple[str, str]]) -> str | None:
     adj: dict[str, list[str]] = {i: [] for i in ids}

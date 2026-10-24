@@ -3,6 +3,16 @@ from __future__ import annotations
 import numpy as np
 
 
+def _bollinger(
+    closes: np.ndarray, period: int, std_dev: float
+) -> tuple[float, float, float, float]:
+    """Closed-window middle, population sigma, upper and lower (caller guards warmup)."""
+    recent = closes[-period:]
+    middle = float(recent.mean())
+    sigma = float(recent.std(ddof=0))
+    return middle, sigma, middle + std_dev * sigma, middle - std_dev * sigma
+
+
 def _ema(closes: np.ndarray, period: int) -> np.ndarray:
     """Calculate exponential moving average.
 

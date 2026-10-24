@@ -9,6 +9,11 @@ from typing import Any
 
 VERSION = "koval_trade_decision_context_v1"
 _SUPPORTED = {
+    "source.value",
+    "fact.compare",
+    "fact.cross",
+    "fact.distance",
+    "policy.from_condition",
     "fact.rsi_cross",
     "fact.ema_cross",
     "fact.every_bar",

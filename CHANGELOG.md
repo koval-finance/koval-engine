@@ -8,6 +8,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- Versioned primary historical numeric values and conditions, typed comparisons,
+  crossings, signed distances and an explicit condition policy bridge, guarded
+  by the `numeric_values_v1` host capability.
+
 - Native bounded price-drop Spot DCA with shared average-price target and fixed
   arithmetic buy-first Spot Grid, through separate typed recipe terminals.
 - Versioned cash-funded multi-order contracts, per-order and cycle reservations,

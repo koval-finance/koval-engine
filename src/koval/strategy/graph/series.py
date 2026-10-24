@@ -12,13 +12,18 @@ import numpy as np
 from koval.engine.history_window import DEFAULT_HISTORY_BARS, resolve_history_bars
 from koval.strategy.graph.compat import compile_legacy, is_legacy_graph
 from koval.strategy.graph.registry import get_node
+from koval.strategy.graph.values import graph_required_history_bars
 from koval.strategy.helpers._math import _macd
 from koval.strategy.helpers.rolling_indicators import rolling_atr, rolling_ema, rolling_rsi
 
 
-def strategy_indicator_series(graph, candles, *, timeframe, history_bars=DEFAULT_HISTORY_BARS):
+def strategy_indicator_series(
+    graph, candles, *, timeframe, history_bars=DEFAULT_HISTORY_BARS, symbol=None
+):
     window = resolve_history_bars(history_bars)
     typed = compile_legacy(graph) if is_legacy_graph(graph) else graph
+    if window < graph_required_history_bars(typed):
+        raise ValueError("history window is too small for numeric sources")
     rows = np.asarray(candles, dtype=float)
     if not len(rows):
         return []
@@ -27,6 +32,11 @@ def strategy_indicator_series(graph, candles, *, timeframe, history_bars=DEFAULT
     for block in typed["blocks"]:
         kind = block["type"]
         params = get_node(kind).params_schema(**(block.get("params") or {})).model_dump()
+        if kind == "source.value":
+            from koval.strategy.graph.value_series import numeric_value_series
+
+            result.append(numeric_value_series(block, rows, timeframe, symbol, window))
+            continue
         descriptors = []
         if kind == "fact.ema_cross":
             descriptors = [("fast", "ema", params["fast"]), ("slow", "ema", params["slow"])]

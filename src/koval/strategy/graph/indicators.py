@@ -26,7 +26,11 @@ _NODE_INDICATORS = {
 
 
 class PreparedIndicators:
-    """Per-run tables; a context receives only its own timestamp's scalar pairs."""
+    """Per-run tables; a context receives only its own timestamp's scalar pairs.
+
+    source.value deliberately stays on value_at: these legacy scalar pairs do
+    not carry its full timing, readiness, offset and provenance binding.
+    """
 
     def __init__(self, timestamps, history_bars, values):
         self._timestamps = timestamps.copy()
