@@ -16,6 +16,7 @@ from koval.exchanges.base import timeframe_ms
 from koval.strategy.graph.entities import NumericValueV1, ValueUnit
 from koval.strategy.graph.node import BarContext
 from koval.strategy.helpers._math import _atr, _bollinger, _ema
+from koval.strategy.helpers.filters.trend import adx_value
 
 ValueComponent = Literal[
     "open",
@@ -25,6 +26,8 @@ ValueComponent = Literal[
     "volume",
     "ema",
     "atr",
+    "adx",
+    "relative_volume",
     "bb.middle",
     "bb.upper",
     "bb.lower",
@@ -49,22 +52,37 @@ class ValueSpecV1(BaseModel):
 
     @model_validator(mode="after")
     def _variant(self):
-        windowed = self.component in {"ema", "atr"} or "." in self.component
+        windowed = (
+            self.component in {"ema", "atr", "adx", "relative_volume"} or "." in self.component
+        )
         if not windowed and self.period is not None:
             raise ValueError("period is unsupported for OHLCV")
         if not self.component.startswith("bb.") and self.std_dev is not None:
             raise ValueError("std_dev is supported only for BB")
         if windowed and self.period is None:
-            object.__setattr__(self, "period", 14 if self.component == "atr" else 20)
+            object.__setattr__(self, "period", 14 if self.component in {"atr", "adx"} else 20)
         if self.component.startswith("bb.") and self.std_dev is None:
             object.__setattr__(self, "std_dev", 2.0)
         return self
 
     def required_history_bars(self) -> int:
         count = self.period or 1
-        if self.component == "atr" or self.component.startswith("channel."):
+        if self.component == "adx":
+            count = 2 * self.period + 1
+        elif self.component in {"atr", "relative_volume"} or self.component.startswith("channel."):
             count += 1
         return count + self.offset_bars
+
+    @property
+    def formula_prefix(self) -> str:
+        """Version only added semantics; legacy component identities stay exact."""
+        return {"adx": "adx_wilder_v1", "relative_volume": "relative_volume_v1"}.get(
+            self.component, VALUE_FORMULA_VERSION
+        )
+
+    @property
+    def formula_version(self) -> str:
+        return self.formula_prefix + ":" + self.model_dump_json()
 
     @property
     def unit(self) -> ValueUnit:
@@ -72,8 +90,10 @@ class ValueSpecV1(BaseModel):
             return "base_volume"
         if self.component == "bb.width_pct":
             return "percent"
-        if self.component == "bb.zscore":
+        if self.component in {"bb.zscore", "adx"}:
             return "dimensionless"
+        if self.component == "relative_volume":
+            return "ratio"
         return "price_quote_per_base"
 
 
@@ -104,12 +124,20 @@ def _arrays(ctx, spec, end):
     component = spec.component
     if component in {"ema", "close"} or component.startswith("bb."):
         names = ["closes"]
-    elif component == "atr":
+    elif component in {"atr", "adx"}:
         names = ["highs", "lows", "closes"]
     elif component.startswith("channel."):
         names = ["highs", "lows"]
     else:
-        names = [{"open": "opens", "high": "highs", "low": "lows", "volume": "volumes"}[component]]
+        names = [
+            {
+                "open": "opens",
+                "high": "highs",
+                "low": "lows",
+                "volume": "volumes",
+                "relative_volume": "volumes",
+            }[component]
+        ]
     result = {}
     for name in names:
         raw = getattr(ctx, name)
@@ -120,7 +148,7 @@ def _arrays(ctx, spec, end):
             return {}, "invalid", "misaligned_history"
         a = a[:end]
         # Only recursive EMA/ATR depend on the whole retained prefix.
-        if component not in {"ema", "atr"}:
+        if component not in {"ema", "atr", "adx"}:
             a = a[-(spec.required_history_bars() - spec.offset_bars) :]
         if component.startswith("channel."):
             a = a[:-1]
@@ -136,6 +164,15 @@ def _calculate(spec, arrays):
         return float(_ema(arrays["closes"], period)[-1]), None
     if component == "atr":
         return _atr(arrays["highs"], arrays["lows"], arrays["closes"], period), None
+    if component == "adx":
+        result = adx_value(arrays["highs"], arrays["lows"], arrays["closes"], period)
+        return result, "insufficient_valid_dx" if result is None else None
+    if component == "relative_volume":
+        volumes = arrays["volumes"]
+        mean = float(np.mean(volumes[:-1]))
+        if not np.isfinite(mean):
+            return None, "nonfinite_intermediate"
+        return (float(volumes[-1]) / mean, None) if mean else (None, "zero_volume_mean")
     if component.startswith("channel."):
         upper, lower = float(max(arrays["highs"])), float(min(arrays["lows"]))
         return {
@@ -168,7 +205,7 @@ def value_at(ctx: BarContext, spec: ValueSpecV1) -> NumericValueV1:
     as_of, available, readiness, reason = _timing(ctx, spec, size)
     cursor = json.dumps(
         {
-            "formula": VALUE_FORMULA_VERSION,
+            "formula": spec.formula_prefix,
             "spec": spec.model_dump(),
             "symbol": ctx.symbol,
             "timeframe": ctx.timeframe,
@@ -190,7 +227,13 @@ def value_at(ctx: BarContext, spec: ValueSpecV1) -> NumericValueV1:
                 with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
                     result, reason = _calculate(spec, arrays)
                 if reason:
-                    readiness = "missing" if reason == "zero_variance" else "invalid"
+                    readiness = (
+                        "warming_up"
+                        if reason == "insufficient_valid_dx"
+                        else "missing"
+                        if reason in {"zero_variance", "zero_volume_mean"}
+                        else "invalid"
+                    )
                 elif not np.isfinite(result):
                     result, readiness, reason = None, "invalid", "nonfinite_result"
     if spec.component.startswith("channel.") and as_of is not None:
@@ -210,7 +253,7 @@ def value_at(ctx: BarContext, spec: ValueSpecV1) -> NumericValueV1:
         available_at_ms=available,
         readiness=readiness,
         reason=reason,
-        formula_version=VALUE_FORMULA_VERSION + ":" + spec.model_dump_json(),
+        formula_version=spec.formula_version,
         input_cursor=cursor,
     )
 

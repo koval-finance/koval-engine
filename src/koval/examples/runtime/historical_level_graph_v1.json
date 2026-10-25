@@ -1,0 +1,393 @@
+{
+  "schema": "koval_historical_level_graph_fixture_v1",
+  "graph": {
+    "blocks": [
+      {
+        "id": "width",
+        "type": "source.value",
+        "params": {
+          "component": "bb.width_pct",
+          "period": 2
+        }
+      },
+      {
+        "id": "compressed",
+        "type": "fact.compare",
+        "params": {
+          "operator": "lt",
+          "literal": 1.0,
+          "unit": "percent"
+        }
+      },
+      {
+        "id": "hold",
+        "type": "state.condition_hold",
+        "params": {
+          "bars": 3
+        }
+      },
+      {
+        "id": "edge",
+        "type": "fact.condition_edge",
+        "params": {}
+      },
+      {
+        "id": "lower",
+        "type": "source.value",
+        "params": {
+          "component": "channel.lower",
+          "period": 2
+        }
+      },
+      {
+        "id": "upper",
+        "type": "source.value",
+        "params": {
+          "component": "channel.upper",
+          "period": 2
+        }
+      },
+      {
+        "id": "level",
+        "type": "state.level_setup",
+        "params": {
+          "mode": "breakout",
+          "expires_after_bars": 3,
+          "invalidation_buffer_pct": 0.0
+        }
+      },
+      {
+        "id": "rvol",
+        "type": "source.value",
+        "params": {
+          "component": "relative_volume",
+          "period": 2
+        }
+      },
+      {
+        "id": "liquid",
+        "type": "fact.compare",
+        "params": {
+          "operator": "gt",
+          "literal": 1.0,
+          "unit": "ratio"
+        }
+      },
+      {
+        "id": "policy",
+        "type": "policy.from_condition",
+        "params": {}
+      },
+      {
+        "id": "agreement",
+        "type": "interp.confluence_and",
+        "params": {}
+      },
+      {
+        "id": "gate",
+        "type": "interp.direction_gate",
+        "params": {
+          "allow_short": false
+        }
+      },
+      {
+        "id": "order",
+        "type": "exec.order_constructor",
+        "params": {
+          "risk_pct": 0.1,
+          "sl_pct": 10.0,
+          "take_profit_mode": "disabled"
+        }
+      },
+      {
+        "id": "price",
+        "type": "source.value",
+        "params": {
+          "component": "close"
+        }
+      },
+      {
+        "id": "exit_condition",
+        "type": "fact.compare",
+        "params": {
+          "operator": "gt",
+          "literal": 113.0,
+          "unit": "price_quote_per_base"
+        }
+      },
+      {
+        "id": "exit_policy",
+        "type": "policy.from_condition",
+        "params": {}
+      },
+      {
+        "id": "exit",
+        "type": "exec.position_exit",
+        "params": {}
+      }
+    ],
+    "connections": [
+      {
+        "from": "width",
+        "from_port": "value",
+        "to": "compressed",
+        "to_port": "left"
+      },
+      {
+        "from": "compressed",
+        "from_port": "condition",
+        "to": "hold",
+        "to_port": "condition"
+      },
+      {
+        "from": "hold",
+        "from_port": "condition",
+        "to": "edge",
+        "to_port": "condition"
+      },
+      {
+        "from": "edge",
+        "from_port": "event",
+        "to": "level",
+        "to_port": "trigger"
+      },
+      {
+        "from": "lower",
+        "from_port": "value",
+        "to": "level",
+        "to_port": "lower"
+      },
+      {
+        "from": "upper",
+        "from_port": "value",
+        "to": "level",
+        "to_port": "upper"
+      },
+      {
+        "from": "rvol",
+        "from_port": "value",
+        "to": "liquid",
+        "to_port": "left"
+      },
+      {
+        "from": "liquid",
+        "from_port": "condition",
+        "to": "policy",
+        "to_port": "condition"
+      },
+      {
+        "from": "level",
+        "from_port": "event",
+        "to": "agreement",
+        "to_port": "events"
+      },
+      {
+        "from": "agreement",
+        "from_port": "agreement",
+        "to": "gate",
+        "to_port": "agreement"
+      },
+      {
+        "from": "policy",
+        "from_port": "policy",
+        "to": "gate",
+        "to_port": "policies"
+      },
+      {
+        "from": "gate",
+        "from_port": "intent",
+        "to": "order",
+        "to_port": "intent"
+      },
+      {
+        "from": "price",
+        "from_port": "value",
+        "to": "exit_condition",
+        "to_port": "left"
+      },
+      {
+        "from": "exit_condition",
+        "from_port": "condition",
+        "to": "exit_policy",
+        "to_port": "condition"
+      },
+      {
+        "from": "exit_policy",
+        "from_port": "policy",
+        "to": "exit",
+        "to_port": "condition"
+      }
+    ]
+  },
+  "candles": [
+    [
+      0,
+      100,
+      110,
+      100,
+      100,
+      100
+    ],
+    [
+      60000,
+      110,
+      110,
+      100,
+      110,
+      100
+    ],
+    [
+      120000,
+      105,
+      110,
+      100,
+      105,
+      100
+    ],
+    [
+      180000,
+      105,
+      110,
+      100,
+      105,
+      100
+    ],
+    [
+      240000,
+      105,
+      110,
+      100,
+      105,
+      100
+    ],
+    [
+      300000,
+      105,
+      110,
+      100,
+      105,
+      100
+    ],
+    [
+      360000,
+      110,
+      112,
+      105,
+      111,
+      200
+    ],
+    [
+      420000,
+      113,
+      115,
+      112,
+      114,
+      300
+    ],
+    [
+      480000,
+      114,
+      115,
+      113,
+      114,
+      300
+    ],
+    [
+      540000,
+      114,
+      115,
+      113,
+      114,
+      300
+    ]
+  ],
+  "expected": {
+    "compression_hold": [
+      null,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false
+    ],
+    "edge_indices": [
+      5
+    ],
+    "armed_index": 5,
+    "opportunity_indices": [
+      6
+    ],
+    "order_indices": [
+      6
+    ],
+    "bounds": [
+      100.0,
+      110.0,
+      105.0
+    ],
+    "rvol_at_opportunity": 2.0
+  },
+  "veto_variant": {
+    "volume_changes": {
+      "6": 50.0,
+      "7": 150.0
+    },
+    "expected_rvol_at_opportunity": 0.5,
+    "expected_rvol_next": 2.0,
+    "order_indices": []
+  },
+  "plugin_scenario": {
+    "schema": "koval_historical_level_plugin_scenario_v1",
+    "status": "unverified_receipt_required",
+    "public_loader": "koval.engine.backtest_engine.load_backtest_engine",
+    "initial_capital": 1000.0,
+    "symbol": "BTCUSDT",
+    "timeframe": "1m",
+    "exchange": "binance",
+    "exchange_type": "spot",
+    "leverage": 1.0,
+    "execution_contract_version": 1,
+    "execution_profile": {
+      "version": "paper_ohlcv_realistic_v2",
+      "commission_bps": 10.0,
+      "spread_bps": 0.0,
+      "slippage_bps": 0.0
+    },
+    "fee_asset": "USDT",
+    "fee_model": "quote_notional_fraction",
+    "fee_rate": 0.001,
+    "signal_index": 6,
+    "earliest_buy_fill_index": 7,
+    "buy_price": 113.0,
+    "exit_signal_index": 7,
+    "earliest_sell_fill_index": 8,
+    "sell_price": 114.0,
+    "quantity_oracle": "derive submitted quantity from existing order constructor; reconcile actual filled q separately",
+    "buy_cash_oracle": "1000 - 113.113 * q",
+    "buy_base_oracle": "q",
+    "final_cash_oracle": "1000 + 0.773 * q",
+    "final_base_oracle": 0.0,
+    "required_assertions": [
+      "actual public loader and unchanged plugin, no mocked successful runner",
+      "buy fill no earlier than next available open after opportunity",
+      "exit intent precedes new entry; no same-decision reentry",
+      "explicit quote fee model and fee asset for each actual fill",
+      "actual filled q > 0; sell actual remaining inventory; no oversell",
+      "fills and fee cashflows reconcile free/reserved quote/base and equity",
+      "existing stop-versus-signal and protected remaining-inventory regressions also pass"
+    ],
+    "not_proven": [
+      "pending-order recovery",
+      "stops after crash",
+      "adapter resume",
+      "paper transport",
+      "venue fills",
+      "Testnet",
+      "profitability"
+    ]
+  }
+}

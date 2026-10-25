@@ -1,0 +1,598 @@
+{
+  "schema": "koval_historical_levels_fixture_v1",
+  "cases": [
+    {
+      "name": "initial_null",
+      "params": {
+        "mode": "sweep_reclaim",
+        "expires_after_bars": 3,
+        "invalidation_buffer_pct": 0.0
+      },
+      "frozen": [
+        100.0,
+        110.0,
+        105.0
+      ],
+      "bars": [
+        {
+          "index": 0,
+          "trigger": false,
+          "ohlc": {
+            "open": 105.0,
+            "high": 112.0,
+            "low": 101.0,
+            "close": 105.0
+          },
+          "expected_status": "unavailable",
+          "expected_event": false
+        }
+      ]
+    },
+    {
+      "name": "freeze_and_wait",
+      "params": {
+        "mode": "sweep_reclaim",
+        "expires_after_bars": 3,
+        "invalidation_buffer_pct": 0.0
+      },
+      "frozen": [
+        100.0,
+        110.0,
+        105.0
+      ],
+      "bars": [
+        {
+          "index": 0,
+          "trigger": true,
+          "ohlc": {
+            "open": 100.0,
+            "high": 112.0,
+            "low": 99.0,
+            "close": 101.0
+          },
+          "expected_status": "armed",
+          "expected_event": false
+        },
+        {
+          "index": 1,
+          "trigger": false,
+          "ohlc": {
+            "open": 105.0,
+            "high": 150.0,
+            "low": 101.0,
+            "close": 105.0
+          },
+          "expected_status": "armed",
+          "expected_event": false,
+          "upper": 150.0,
+          "same_id": true
+        },
+        {
+          "index": 2,
+          "trigger": false,
+          "ohlc": {
+            "open": 100.0,
+            "high": 112.0,
+            "low": 99.0,
+            "close": 101.0
+          },
+          "expected_status": "consumed",
+          "expected_event": true,
+          "same_id": true
+        },
+        {
+          "index": 3,
+          "trigger": false,
+          "ohlc": {
+            "open": 100.0,
+            "high": 112.0,
+            "low": 99.0,
+            "close": 101.0
+          },
+          "expected_status": "consumed",
+          "expected_event": false,
+          "same_id": true
+        }
+      ]
+    },
+    {
+      "name": "inclusive_expiry",
+      "params": {
+        "mode": "sweep_reclaim",
+        "expires_after_bars": 3,
+        "invalidation_buffer_pct": 0.0
+      },
+      "frozen": [
+        100.0,
+        110.0,
+        105.0
+      ],
+      "bars": [
+        {
+          "index": 0,
+          "trigger": true,
+          "ohlc": {
+            "open": 105.0,
+            "high": 112.0,
+            "low": 101.0,
+            "close": 105.0
+          },
+          "expected_status": "armed",
+          "expected_event": false
+        },
+        {
+          "index": 1,
+          "trigger": false,
+          "ohlc": {
+            "open": 105.0,
+            "high": 112.0,
+            "low": 101.0,
+            "close": 105.0
+          },
+          "expected_status": "armed",
+          "expected_event": false
+        },
+        {
+          "index": 2,
+          "trigger": false,
+          "ohlc": {
+            "open": 105.0,
+            "high": 112.0,
+            "low": 101.0,
+            "close": 105.0
+          },
+          "expected_status": "armed",
+          "expected_event": false
+        },
+        {
+          "index": 3,
+          "trigger": false,
+          "ohlc": {
+            "open": 100.0,
+            "high": 112.0,
+            "low": 99.0,
+            "close": 101.0
+          },
+          "expected_status": "consumed",
+          "expected_event": true
+        }
+      ]
+    },
+    {
+      "name": "expiry_before_late_reclaim",
+      "params": {
+        "mode": "sweep_reclaim",
+        "expires_after_bars": 3,
+        "invalidation_buffer_pct": 0.0
+      },
+      "frozen": [
+        100.0,
+        110.0,
+        105.0
+      ],
+      "bars": [
+        {
+          "index": 0,
+          "trigger": true,
+          "ohlc": {
+            "open": 105.0,
+            "high": 112.0,
+            "low": 101.0,
+            "close": 105.0
+          },
+          "expected_status": "armed",
+          "expected_event": false
+        },
+        {
+          "index": 1,
+          "trigger": false,
+          "ohlc": {
+            "open": 105.0,
+            "high": 112.0,
+            "low": 101.0,
+            "close": 105.0
+          },
+          "expected_status": "armed",
+          "expected_event": false
+        },
+        {
+          "index": 2,
+          "trigger": false,
+          "ohlc": {
+            "open": 105.0,
+            "high": 112.0,
+            "low": 101.0,
+            "close": 105.0
+          },
+          "expected_status": "armed",
+          "expected_event": false
+        },
+        {
+          "index": 3,
+          "trigger": false,
+          "ohlc": {
+            "open": 105.0,
+            "high": 112.0,
+            "low": 101.0,
+            "close": 105.0
+          },
+          "expected_status": "armed",
+          "expected_event": false
+        },
+        {
+          "index": 4,
+          "trigger": false,
+          "ohlc": {
+            "open": 100.0,
+            "high": 112.0,
+            "low": 99.0,
+            "close": 101.0
+          },
+          "expected_status": "expired",
+          "expected_event": false
+        }
+      ]
+    },
+    {
+      "name": "opening_gap_precedes_reclaim",
+      "params": {
+        "mode": "sweep_reclaim",
+        "expires_after_bars": 3,
+        "invalidation_buffer_pct": 0.0
+      },
+      "frozen": [
+        100.0,
+        110.0,
+        105.0
+      ],
+      "bars": [
+        {
+          "index": 0,
+          "trigger": true,
+          "ohlc": {
+            "open": 105.0,
+            "high": 112.0,
+            "low": 101.0,
+            "close": 105.0
+          },
+          "expected_status": "armed",
+          "expected_event": false
+        },
+        {
+          "index": 1,
+          "trigger": false,
+          "ohlc": {
+            "open": 99.0,
+            "high": 112.0,
+            "low": 98.0,
+            "close": 101.0
+          },
+          "expected_status": "invalidated",
+          "expected_event": false
+        }
+      ]
+    },
+    {
+      "name": "close_below_invalidates",
+      "params": {
+        "mode": "sweep_reclaim",
+        "expires_after_bars": 3,
+        "invalidation_buffer_pct": 0.0
+      },
+      "frozen": [
+        100.0,
+        110.0,
+        105.0
+      ],
+      "bars": [
+        {
+          "index": 0,
+          "trigger": true,
+          "ohlc": {
+            "open": 105.0,
+            "high": 112.0,
+            "low": 101.0,
+            "close": 105.0
+          },
+          "expected_status": "armed",
+          "expected_event": false
+        },
+        {
+          "index": 1,
+          "trigger": false,
+          "ohlc": {
+            "open": 105.0,
+            "high": 112.0,
+            "low": 98.0,
+            "close": 99.0
+          },
+          "expected_status": "invalidated",
+          "expected_event": false
+        }
+      ]
+    },
+    {
+      "name": "equality_is_not_invalidation_or_reclaim",
+      "params": {
+        "mode": "sweep_reclaim",
+        "expires_after_bars": 3,
+        "invalidation_buffer_pct": 0.0
+      },
+      "frozen": [
+        100.0,
+        110.0,
+        105.0
+      ],
+      "bars": [
+        {
+          "index": 0,
+          "trigger": true,
+          "ohlc": {
+            "open": 105.0,
+            "high": 112.0,
+            "low": 101.0,
+            "close": 105.0
+          },
+          "expected_status": "armed",
+          "expected_event": false
+        },
+        {
+          "index": 1,
+          "trigger": false,
+          "ohlc": {
+            "open": 100.0,
+            "high": 112.0,
+            "low": 99.0,
+            "close": 100.0
+          },
+          "expected_status": "armed",
+          "expected_event": false
+        }
+      ]
+    },
+    {
+      "name": "primary_gap_invalidates",
+      "params": {
+        "mode": "sweep_reclaim",
+        "expires_after_bars": 3,
+        "invalidation_buffer_pct": 0.0
+      },
+      "frozen": [
+        100.0,
+        110.0,
+        105.0
+      ],
+      "bars": [
+        {
+          "index": 0,
+          "trigger": true,
+          "ohlc": {
+            "open": 105.0,
+            "high": 112.0,
+            "low": 101.0,
+            "close": 105.0
+          },
+          "expected_status": "armed",
+          "expected_event": false
+        },
+        {
+          "index": 2,
+          "trigger": false,
+          "ohlc": {
+            "open": 100.0,
+            "high": 112.0,
+            "low": 99.0,
+            "close": 101.0
+          },
+          "expected_status": "invalidated",
+          "expected_event": false
+        }
+      ]
+    },
+    {
+      "name": "retest_1.0",
+      "params": {
+        "mode": "breakout_retest",
+        "expires_after_bars": 3,
+        "invalidation_buffer_pct": 0.0,
+        "tolerance_pct": 1.0
+      },
+      "frozen": [
+        110.0,
+        110.0,
+        110.0
+      ],
+      "bars": [
+        {
+          "index": 0,
+          "trigger": true,
+          "ohlc": {
+            "open": 110.0,
+            "high": 112.0,
+            "low": 110.0,
+            "close": 112.0
+          },
+          "expected_status": "armed",
+          "expected_event": false,
+          "upper": null,
+          "lower": 110.0
+        },
+        {
+          "index": 1,
+          "trigger": false,
+          "ohlc": {
+            "open": 112.0,
+            "high": 112.0,
+            "low": 111.0,
+            "close": 112.0
+          },
+          "expected_status": "consumed",
+          "expected_event": true,
+          "upper": null,
+          "lower": 150.0
+        }
+      ]
+    },
+    {
+      "name": "retest_0.0",
+      "params": {
+        "mode": "breakout_retest",
+        "expires_after_bars": 3,
+        "invalidation_buffer_pct": 0.0,
+        "tolerance_pct": 0.0
+      },
+      "frozen": [
+        110.0,
+        110.0,
+        110.0
+      ],
+      "bars": [
+        {
+          "index": 0,
+          "trigger": true,
+          "ohlc": {
+            "open": 110.0,
+            "high": 112.0,
+            "low": 110.0,
+            "close": 112.0
+          },
+          "expected_status": "armed",
+          "expected_event": false,
+          "upper": null,
+          "lower": 110.0
+        },
+        {
+          "index": 1,
+          "trigger": false,
+          "ohlc": {
+            "open": 112.0,
+            "high": 112.0,
+            "low": 111.0,
+            "close": 112.0
+          },
+          "expected_status": "armed",
+          "expected_event": false,
+          "upper": null,
+          "lower": 150.0
+        }
+      ]
+    },
+    {
+      "name": "cross_110.0_111.0",
+      "params": {
+        "mode": "breakout",
+        "expires_after_bars": 3,
+        "invalidation_buffer_pct": 0.0
+      },
+      "frozen": [
+        100.0,
+        110.0,
+        105.0
+      ],
+      "bars": [
+        {
+          "index": 0,
+          "trigger": true,
+          "ohlc": {
+            "open": 105.0,
+            "high": 112.0,
+            "low": 101.0,
+            "close": 110.0
+          },
+          "expected_status": "armed",
+          "expected_event": false
+        },
+        {
+          "index": 1,
+          "trigger": false,
+          "ohlc": {
+            "open": 105.0,
+            "high": 112.0,
+            "low": 101.0,
+            "close": 111.0
+          },
+          "expected_status": "consumed",
+          "expected_event": true
+        }
+      ]
+    },
+    {
+      "name": "cross_111.0_112.0",
+      "params": {
+        "mode": "breakout",
+        "expires_after_bars": 3,
+        "invalidation_buffer_pct": 0.0
+      },
+      "frozen": [
+        100.0,
+        110.0,
+        105.0
+      ],
+      "bars": [
+        {
+          "index": 0,
+          "trigger": true,
+          "ohlc": {
+            "open": 105.0,
+            "high": 112.0,
+            "low": 101.0,
+            "close": 111.0
+          },
+          "expected_status": "armed",
+          "expected_event": false
+        },
+        {
+          "index": 1,
+          "trigger": false,
+          "ohlc": {
+            "open": 105.0,
+            "high": 112.0,
+            "low": 101.0,
+            "close": 112.0
+          },
+          "expected_status": "armed",
+          "expected_event": false
+        }
+      ]
+    },
+    {
+      "name": "cross_110.0_110.0",
+      "params": {
+        "mode": "breakout",
+        "expires_after_bars": 3,
+        "invalidation_buffer_pct": 0.0
+      },
+      "frozen": [
+        100.0,
+        110.0,
+        105.0
+      ],
+      "bars": [
+        {
+          "index": 0,
+          "trigger": true,
+          "ohlc": {
+            "open": 105.0,
+            "high": 112.0,
+            "low": 101.0,
+            "close": 110.0
+          },
+          "expected_status": "armed",
+          "expected_event": false
+        },
+        {
+          "index": 1,
+          "trigger": false,
+          "ohlc": {
+            "open": 105.0,
+            "high": 112.0,
+            "low": 101.0,
+            "close": 110.0
+          },
+          "expected_status": "armed",
+          "expected_event": false
+        }
+      ]
+    }
+  ]
+}

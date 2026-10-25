@@ -12,6 +12,9 @@ def graph_execution_capabilities(graph: dict) -> frozenset[str]:
             "fact.compare",
             "fact.cross",
             "fact.distance",
+            "state.condition_hold",
+            "state.level_setup",
+            "fact.condition_edge",
             "policy.from_condition",
         }:
             required.add("numeric_values_v1")

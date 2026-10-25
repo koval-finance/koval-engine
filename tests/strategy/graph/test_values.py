@@ -134,7 +134,7 @@ def test_composite_history_requirement_is_not_clamped(api, component, params, mi
 @pytest.mark.parametrize(
     "params",
     [
-        {"component": "adx"},
+        {"component": "adx_unknown"},
         {"component": "close", "period": 3},
         {"component": "ema", "std_dev": 2},
         {"component": "ema", "period": 1},

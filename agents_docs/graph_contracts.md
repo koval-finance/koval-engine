@@ -266,3 +266,21 @@ Tests: `test_decision_evidence.py` and `test_strategy_series.py` under
 See [numeric values](numeric_values.md) for exact ports, parameters, formulas,
 readiness, primary ideal-close timing, bounded state and numeric_values_v1
 capability gates. Legacy entities, boolean policies and graph hashes are unchanged.
+
+Historical conditions add ADX/RVOL source variants, STATE1 `state.condition_hold` and FACT1
+`fact.condition_edge`. Both accept ConditionV1 exactly once; PolicyDecision is
+not an implicit condition. Reducer state is bounded, versioned and bound to its
+own config/formula; GraphStrategy validates it before restore, keeping the old
+envelope. Public condition-history discovery separates retained source rows from
+consecutive streaming latency across the DAG. See the numeric contract for exact
+timing, duplicate, unavailable, checkpoint and capability-discovery rules.
+
+## Frozen historical level setups
+
+One `state.level_setup` owner freezes causal price bounds at a trigger close and
+consumes at most one later bullish opportunity after sweep reclaim, breakout retest
+or breakout. Strict schemas, inclusive expiry, primary-gap/price invalidation,
+bounded validated checkpoints and semantic/history discovery are documented in
+[the level contract](historical_levels.md).
+This is primary historical ideal-close semantics; plugin execution and resume are
+not certified by the semantic report. No new order, stop, sizing or detector exists.

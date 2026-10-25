@@ -6,12 +6,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.12.7] - 2026-10-25
+
 ### Added
 
+- Add strict frozen historical `LevelSnapshotV1` and `state.level_setup` for later
+  sweep reclaim, breakout retest and breakout opportunities with inclusive expiry,
+  invalidation priority and consume-once lifecycle.
+- Add validated bounded post-bar level checkpoints, original arming evidence,
+  separate versioned semantic/history reports and portable literal/graph scenarios.
+  Adapter execution/resume remains unverified; no operational mode is enabled.
+- Primary historical ADX (one shared Wilder calculation) and relative volume
+  measurements, strict bounded consecutive-condition hold and rising-edge nodes.
+- Versioned historical condition schema/formula/state discovery and DAG replay-prefix reporting
+  separate from retained source history, with strict config-bound snapshots and
+  portable literal value/hold/edge/evidence/suffix fixtures. Existing scalar
+  formulas, graph dumps, host capability negotiation and state envelope remain
+  unchanged. Extended physical demand above 1000 rows refuses; temporal latency can
+  exceed 1000. No adapter, paper, Testnet or live execution support is certified.
 - Versioned primary historical numeric values and conditions, typed comparisons,
   crossings, signed distances and an explicit condition policy bridge, guarded
   by the `numeric_values_v1` host capability.
-
 - Native bounded price-drop Spot DCA with shared average-price target and fixed
   arithmetic buy-first Spot Grid, through separate typed recipe terminals.
 - Versioned cash-funded multi-order contracts, per-order and cycle reservations,
@@ -23,6 +38,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Checksummed JSON acceptance fixtures for independent historical-adapter adoption,
   including accounting controls, nonzero fees, gaps, partial fills and cancel races.
   No transport, real-money route or additional runtime dependency is added.
+
+### Fixed
+
+- Reject incomplete or incoherent crossing history when restoring historical
+  level graphs, before mutating state, so the next crossing is not silently lost.
+- Reject condition-graph checkpoints whose envelope cursor or complete reducer
+  state disagrees with the completed bar, preventing skipped decisions on resume.
 
 ## [0.12.6] - 2026-10-21
 
@@ -497,7 +519,8 @@ First public release.
 - The MIT/GPL boundary is enforced by a test rather than by convention: no file in this package may import Backtrader.
 - Releases are published to PyPI through Trusted Publishing (OIDC) with PEP 740 attestations. No long-lived PyPI credential is used in CI.
 
-[Unreleased]: https://github.com/koval-finance/koval-engine/compare/v0.12.6...HEAD
+[Unreleased]: https://github.com/koval-finance/koval-engine/compare/v0.12.7...HEAD
+[0.12.7]: https://github.com/koval-finance/koval-engine/compare/v0.12.6...v0.12.7
 [0.12.6]: https://github.com/koval-finance/koval-engine/compare/v0.12.5...v0.12.6
 [0.12.5]: https://github.com/koval-finance/koval-engine/compare/v0.12.4...v0.12.5
 [0.12.4]: https://github.com/koval-finance/koval-engine/compare/v0.12.2...v0.12.4

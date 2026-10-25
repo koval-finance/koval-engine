@@ -51,3 +51,5 @@ with an "Update this file when" note — honour it in the same change that
 makes it true. Consistency between this index, the files, and the root entry
 file is pinned by
 [`tests/test_agents_docs.py`](../tests/test_agents_docs.py).
+
+- [Frozen historical level setups](historical_levels.md): strict entity/node, lifecycle, checkpoints, history and portable runtime scenario.

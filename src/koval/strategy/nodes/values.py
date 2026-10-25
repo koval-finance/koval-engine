@@ -23,7 +23,7 @@ register_node(
         "source.value",
         Domain.SOURCE,
         "Numeric Value",
-        "One confirmed primary historical OHLCV, EMA, ATR, BB or previous-channel component.",
+        "One confirmed primary historical OHLCV, EMA, ATR, ADX, RVOL, BB or channel component.",
         ValueSpecV1,
         {},
         {"value": PortSpec("value", (NumericValueV1,))},

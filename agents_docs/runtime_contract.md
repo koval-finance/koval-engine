@@ -12,7 +12,7 @@ adapter fixtures are documented in [bounded Spot execution](spot_multi_order.md)
 Legacy execution defaults and injected Spot Testnet v1 remain unchanged/refused
 for these recipes. Engine protocol version remains 2.
 
-This source tree targets package release `0.12.6`. `ENGINE_PROTOCOL_VERSION` is `2`;
+This source tree targets package release `0.12.7`. `ENGINE_PROTOCOL_VERSION` is `2`;
 protocol `1` remains accepted only without an explicit `runtime_contract`.
 The fill/runtime identifier remains `koval_runtime_v2`; input identity remains
 `koval_run_identity_v1`. These names do not certify venue realism.

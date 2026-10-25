@@ -58,7 +58,7 @@ def numeric_value_series(block, rows, timeframe, symbol, window):
         "pane": "price" if spec.unit == "price_quote_per_base" else spec.unit,
         "unit": spec.unit,
         "provenance": "derived",
-        "formula_version": "numeric_value_v1:" + spec.model_dump_json(),
+        "formula_version": spec.formula_version,
         "availability_model": "historical_ideal_close_v1",
         "history_bars": window,
         "points": points,

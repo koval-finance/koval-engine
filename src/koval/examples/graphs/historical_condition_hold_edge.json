@@ -1,0 +1,13 @@
+{
+  "blocks": [
+    {"id": "source", "type": "source.value", "params": {"component": "relative_volume", "period": 2}},
+    {"id": "compare", "type": "fact.compare", "params": {"operator": "gt", "literal": 1.0, "unit": "ratio"}},
+    {"id": "hold", "type": "state.condition_hold", "params": {"bars": 3}},
+    {"id": "edge", "type": "fact.condition_edge", "params": {}}
+  ],
+  "connections": [
+    {"from": "source", "from_port": "value", "to": "compare", "to_port": "left"},
+    {"from": "compare", "from_port": "condition", "to": "hold", "to_port": "condition"},
+    {"from": "hold", "from_port": "condition", "to": "edge", "to_port": "condition"}
+  ]
+}

@@ -2,7 +2,7 @@
 
 This is a primary-symbol, primary-timeframe graph primitive contract. It does
 not change order matching, fixed risk, position exits or any live admission.
-All five nodes require `numeric_values_v1` through the existing execution
+All seven nodes require `numeric_values_v1` through the existing execution
 capability negotiation. Current MIT LiveEngine refuses this capability before
 broker/feed/session effects. A historical plugin must implement and advertise
 it explicitly; an entry-capable plugin is not sufficient.
@@ -70,6 +70,8 @@ SOURCE0, FACT/STATE1, POLICY2, INTERPRETATION3, EXECUTION4.
 | `fact.compare` / FACT | `left:NumericValueV1[1]`, `right:NumericValueV1[0..1]` | `condition:ConditionV1[1]` | required `operator`; `literal/unit/lower/upper=null`, `inclusive=true` |
 | `fact.cross` / FACT | `left:NumericValueV1[1]`, `right:NumericValueV1[1]` | `event:MarketEvent[0..1]` | `direction=both`, one of `up/down/both` |
 | `fact.distance` / FACT | `price:NumericValueV1[1]`, `level:NumericValueV1[1]`, `atr:NumericValueV1[0..1]` | `value:NumericValueV1[1]` | required `mode=percent/atr`; no default |
+| `state.condition_hold` / STATE | `condition:ConditionV1[1]` | `condition:ConditionV1[1]` | required strict `bars:int`, 1..400; no default |
+| `fact.condition_edge` / FACT | `condition:ConditionV1[1]` | `event:MarketEvent[0..1]` | strict empty object; rising only |
 | `policy.from_condition` / POLICY | `condition:ConditionV1[1]` | `policy:PolicyDecision[1]` | strict empty object |
 
 `ValueSpecV1` requires `component`. `context=primary` is the only accepted
@@ -84,13 +86,15 @@ Defaults serialize explicitly, round-trip, and do not migrate saved graphs.
 | `volume` | no period; 1+O | base_volume |
 | `ema` | 20; N+O | price_quote_per_base |
 | `atr` | 14; N+1+O | price_quote_per_base |
+| `adx` | 14; 2N+1+O, plus N valid DX samples | dimensionless |
+| `relative_volume` | 20; N+1+O | ratio |
 | `bb.middle/upper/lower` | 20; N+O; std_dev=2.0 | price_quote_per_base |
 | `bb.width_pct` | 20; N+O; std_dev=2.0 | percent |
 | `bb.zscore` | 20; N+O; std_dev=2.0 | dimensionless |
 | `channel.lower/upper/center` | 20; N+1+O | price_quote_per_base |
 
 N is 2..400; k=std_dev is finite >0. Composite history is never clamped to400.
-For example N400/O20 channel needs421 retained bars. Host history bounds remain
+For example N400/O20 channel needs 421 retained bars. Host history bounds remain
 2..100000. `prepare_backtest` and derived series reject too small a history
 budget; direct evaluation returns warming_up for insufficient actual history.
 A cross additionally requires two consecutive ready evaluations (previous values
@@ -203,6 +207,154 @@ same artifact and cannot reinterpret archived results.
 
 Tests: tests/strategy/graph/test_values.py, test_value_integration.py and
 tests/strategy/nodes/test_conditions.py, plus existing legacy hash guards.
+
+## Historical condition extensions
+
+These additions are historical primary gates. Existing `bb.width_pct` is the
+compression measurement; there is no `bb_width_pct` alias, full squeeze/range
+detector, boolean AND/OR/NOT, alternate feed, or change to execution/matching.
+The new source variants keep ValueSpecV1's strict/frozen schema and existing
+serialization defaults. `ValueSpecV1.formula_prefix: str` and
+`ValueSpecV1.formula_version: str` expose resolved formula identities. Old
+components retain exactly `numeric_value_v1:<resolved JSON>` and unchanged
+input cursors; `VALUE_FORMULA_VERSION` stays `numeric_value_v1`.
+
+ADX uses `adx_wilder_v1:<resolved JSON>`. Public pure helper
+`koval.strategy.helpers.filters.trend.adx_value(highs, lows, closes, period=14)
+-> float | None` is the single Wilder calculation also used by the unchanged
+`adx_filter(highs, lows, closes, period=14, min_adx=25.0) -> bool` predicate.
+It seeds TR/+DM/-DM from indices 1..N, updates from N+1, seeds ADX with the
+first N valid DX samples, then Wilder smooths the remaining retained prefix.
+It needs at least 2N+1 closed bars; an offset removes the suffix before seeding.
+Smoothed TR=0 skips a DX sample. Fewer than N valid samples is null,
+`warming_up/insufficient_valid_dx`. H=L=C constant data cannot produce ready
+zero; constant closes with nonzero true range and zero DM can produce valid
+ADX=0. Ready ADX is dimensionless in 0..100. Legacy threshold equality,
+including min_adx=0, is preserved.
+
+RVOL uses `relative_volume_v1:<resolved JSON>` and
+`V[t] / mean(V[t-N:t])`: N preceding confirmed volumes exclude the selected
+current volume from the denominator. [10,20,30] gives 2 at N2; [10,20,0] gives
+ready zero. Zero preceding mean gives null `missing/zero_volume_mean`.
+Nonfinite mean/result is invalid. Missing, nonfinite or misaligned volume
+arrays and bad primary timing stay unavailable, without scalar-volume fallback.
+The source, prepared strategy, derived chart and recorded output share value_at.
+
+Import reducer parameter models and versions from
+`koval.strategy.nodes.condition_reducers`:
+`HoldParamsV1`, `EdgeParamsV1`, `HOLD_STATE_VERSION=1`, `EDGE_STATE_VERSION=1`,
+`HOLD_FORMULA_VERSION="condition_hold_v1"`,
+`EDGE_FORMULA_VERSION="condition_edge_v1"`.
+Hold rejects missing bars, bool, float, zero, negative and >400. It counts once
+per confirmed primary cursor, saturates at N, and outputs ready false until the
+Nth ready true, then ready true. Ready false resets to zero; unavailable resets
+and preserves null/readiness/reason. Gaps in timestamp or primary bar index reset;
+the first post-gap true counts one. Input symbol/timeframe/unit/formula/source
+binding changes reset before consuming the new cursor. Advancing input cursors
+and history_start_ms do not change that binding as the retained window slides.
+
+Edge emits only consecutive ready false -> ready true. Initial true,
+unavailable -> true, false/unavailable/true, gaps, stale/future input and changed
+bindings cannot fabricate a rising event. Hold3 on true/true/true produces
+false/false/true and its edge fires on the third bar. Hold1 initially true
+produces no event; a later false/true produces one. Event kind is
+`condition_edge`, direction `bullish`, and price_levels is always empty,
+including when the condition originated from a price comparison. Metadata has
+`formula_version="condition_edge_v1"`, `state_version=1`, and detached full
+`previous`/`current` ConditionV1 dumps (including clocks and input cursors).
+GraphExecutor stamps the actual graph node ID on the event and hold output.
+Evidence remains `koval_trade_decision_context_v1` and records both new nodes.
+
+For a duplicate consumed timestamp with unchanged context/source binding and
+bar index, hold returns its prior output even if the payload conflicts; edge
+emits nothing. Neither revises state. A duplicate with changed binding/index
+raises `ValueError`. Backward timestamps, or advancing timestamps with a
+nonadvancing primary bar index, raise before state mutation. Input readiness
+and time are checked on new cursors; stale/future values disarm/reset.
+
+Reducer plain JSON state has strict, extra-forbidden version1 shapes:
+
+- Common: `version`, `last_timestamp_ms`, `last_bar_index`, `symbol`, `timeframe`,
+  `binding` (null or stable symbol/timeframe/unit/formula_version/source_node_id).
+- Hold adds `formula_version`, `bars`, bounded `count` (0..bars), and its last
+  ConditionV1 `output` for duplicate return.
+- Edge adds `formula_version` and `previous` (null or the last ready ConditionV1).
+
+State size depends on graph depth/configuration and bounded scalar provenance,
+never run length or N input bars. Empty state means unstepped.
+GraphStrategy checkpoints with hold/edge nodes require an integer envelope cursor,
+the complete exported node-state map, and reducer cursors/primary identities that
+agree with that completed bar. Initial checkpoints must contain no node states.
+Invalid checkpoints refuse before state mutation or same-bar cache suppression.
+Unsupported
+versions, malformed cursors/count/output, extra fields and own formula/config
+mismatches raise before mutation. Public
+`validate_condition_reducer_state(kind: str, params: BaseModel, state: dict)
+-> None` also runs in `GraphStrategy.restore_graph_state` before any restore,
+so invalid snapshots cannot hide behind same-bar suppression. Changed upstream
+binding resets on the next new cursor, including after restore; own changed N
+refuses. Graph state envelope stays version1 with `version/states/stepped_bar`.
+Snapshots are post-bar state: same-bar restore emits no transient outputs, and
+the suffix reproduces uninterrupted outputs, evidence and state. This does not
+provide a broker journal or adapter resume.
+
+### Physical history and temporal replay
+
+`graph_required_history_bars(graph: dict) -> int` keeps its old meaning: exact
+largest physical source window, never a sum of temporal node latencies. N400
+ADX needs 801+offset rows; RVOL needs 401+offset; existing channel400/offset20
+needs 421. A historical condition graph (ADX/RVOL/hold/edge) with exact physical demand >1000
+refuses at GraphExecutor.build before feed/session execution. Old graphs retain
+their existing explicit larger-window contract. No arrays grow automatically,
+and no demand silently clamps to 400 or 1000.
+
+Public static discovery in `koval.strategy.graph.condition_history`:
+
+- `graph_condition_history_requirements(graph: dict) -> dict`, schema
+  `koval_condition_history_v1`: exact `source_history_bars`,
+  `first_ready_bar_by_node`, `first_true_bar_by_node`, `replay_prefix_bars`,
+  `unknown_nodes`, `assumptions`, and `restored_state`. It validates graph
+  structure and returns exact source requirements even above the admission cap.
+- `condition_capabilities() -> dict`, schema
+  `koval_historical_conditions_capabilities_v1`: JSON parameter schemas for
+  source/hold/edge, independent formula/state/history versions, physical limit,
+  temporal-prefix policy, event/duplicate rules and historical mode binding.
+
+History bar positions are one-based theoretical bounds under uninterrupted,
+valid inputs. Sources' bounds equal their source row requirement; numeric
+nodes propagate maximum parent availability, as do comparisons/bridges.
+Unknown/legacy producer requirements are null and appear in unknown_nodes;
+hosts must combine their independent legacy warmup requirements. A hold's
+first ready bound is its parent's, but first true adds N-1. Nested holds add
+those latencies across the actual DAG. An edge/cross earliest event is
+max(parent first-ready+1, parent first-true). Conservative replay_prefix_bars
+adds one prior-observation allowance at edge/cross; it is not the earliest
+event formula. If an upstream condition first becomes ready at h, holdN can
+turn true at h+N-1, and hold3's edge can fire then. h+N is only conservative
+replay allowance. Four hold400 nodes can first turn true/fire edge at 1597,
+with conservative prefix 1598 and physical source window 1. This remains allowed
+with a bounded 1000-row stream. Runtime missingness may delay all bounds
+indefinitely. A valid restored post-bar state replaces its consumed temporal
+prefix; lack of an uninterrupted replay prefix is distinct from runtime input
+missingness and snapshot validity.
+
+Execution negotiation still requires `numeric_values_v1`; these additions use
+the generic evaluator and do not introduce matching or broker capabilities.
+Existing numeric_values_v1 alone does not identify historical condition engine bytes. Hosts must
+check the new discovery schema and exact artifact identity, then prove their
+plugin's timing/arrays/evidence/state path separately. Discovery declares only
+historical_ideal_close_v1, modes=[historical], primary context,
+adapter_execution_verified=false and adapter_resume_supported=false. Paper,
+exchange sandbox/Testnet, live, HTF and cross-symbol semantics remain closed.
+No adapter execution/support claim follows from source inspection or this report.
+
+Portable literal value/hold/edge/evidence/state expectations and snapshot/suffix
+inputs ship in `koval/examples/runtime/historical_conditions_v1.json` (schema
+`koval_historical_conditions_fixture_v1`). Expected projections are hand-derived;
+tests additionally compare the complete uninterrupted/restored outputs and state.
+`koval/examples/graphs/historical_condition_hold_edge.json` is a runnable graph
+with no execution terminal. Tests include `test_historical_conditions.py`,
+`test_condition_fixtures.py` and `test_condition_reducers.py`.
 
 Update this file when: numeric formulas, scalar schemas, timing, history budgets,
 capabilities, crossing state or derived/recorded evidence contracts change.

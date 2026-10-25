@@ -34,7 +34,9 @@ For the typed-graph contracts specifically, see
 | `src/koval/strategy/base/` | `DeclarativeStrategy` ABC, `TradeSetup`, `EntryConfig` |
 | `src/koval/strategy/helpers/` | pure block functions (signals, filters, exits, risk, interp) |
 | `src/koval/strategy/graph/` | the typed dataflow engine — see [graph_contracts.md](graph_contracts.md) |
+| `src/koval/strategy/graph/condition_history.py` | versioned historical condition schemas and DAG source/replay requirements |
 | `src/koval/strategy/nodes/` | typed nodes wrapping the helpers |
+| `src/koval/strategy/nodes/condition_reducers.py` | bounded condition hold/edge state and snapshot validation |
 | `src/koval/strategy/registry.py` | `BLOCK_CATALOG` and `STRATEGY_REGISTRY` |
 | `src/koval/strategy/schemas.py` | Pydantic parameter models per block |
 | `src/koval/strategy/block_assembler.py` | JSON graph in, runnable strategy out |
@@ -125,3 +127,9 @@ boundaries, and [realism_review.md](realism_review.md) for acceptance limits.
 
 Update this file when: a module is added, moved, or renamed; the execution
 flow gains or loses a stage; the plugin protocol changes.
+
+Frozen historical levels add one STATE owner, `state.level_setup`, with
+`LevelSnapshotV1`, pure price predicates and a versioned bounded post-bar checkpoint.
+[The public contract](historical_levels.md) separates engine semantic discovery
+from receiving-plugin execution proof; existing interpretation/execution boundaries
+remain responsible for policy, risk and orders.

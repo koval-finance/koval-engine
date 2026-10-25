@@ -5,16 +5,19 @@ import numpy as np
 from koval.strategy.helpers._math import _ema, _true_range
 
 
-def adx_filter(
+def adx_value(
     highs: np.ndarray,
     lows: np.ndarray,
     closes: np.ndarray,
     period: int = 14,
-    min_adx: float = 25.0,
-) -> bool:
-    """True if ADX >= min_adx (Wilder-smoothed Average Directional Index)."""
+) -> float | None:
+    """Retained-prefix Wilder ADX, or null without N valid DX samples.
+
+    Zero smoothed true range skips a DX sample. Nonzero range with no
+    directional movement supplies a valid zero sample.
+    """
     if len(closes) < period * 2 + 1:
-        return False
+        return None
     tr = _true_range(highs, lows, closes)
     n = len(closes)
 
@@ -50,14 +53,26 @@ def adx_filter(
             dx_values.append(100.0 * abs(di_plus - di_minus) / denom)
 
     if len(dx_values) < period:
-        return False
+        return None
 
     # Wilder-smooth DX values into ADX (seed with mean of first period DX values)
     adx = float(np.mean(dx_values[:period]))
     for dx in dx_values[period:]:
         adx = (adx * (period - 1) + dx) / period
 
-    return adx >= min_adx
+    return adx
+
+
+def adx_filter(
+    highs: np.ndarray,
+    lows: np.ndarray,
+    closes: np.ndarray,
+    period: int = 14,
+    min_adx: float = 25.0,
+) -> bool:
+    """True if ADX >= min_adx; preserve the legacy threshold predicate."""
+    adx = adx_value(highs, lows, closes, period)
+    return adx is not None and adx >= min_adx
 
 
 def ema_trend_filter(

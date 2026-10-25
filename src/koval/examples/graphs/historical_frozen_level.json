@@ -1,0 +1,219 @@
+{
+  "blocks": [
+    {
+      "id": "width",
+      "type": "source.value",
+      "params": {
+        "component": "bb.width_pct",
+        "period": 2
+      }
+    },
+    {
+      "id": "compressed",
+      "type": "fact.compare",
+      "params": {
+        "operator": "lt",
+        "literal": 1.0,
+        "unit": "percent"
+      }
+    },
+    {
+      "id": "hold",
+      "type": "state.condition_hold",
+      "params": {
+        "bars": 3
+      }
+    },
+    {
+      "id": "edge",
+      "type": "fact.condition_edge",
+      "params": {}
+    },
+    {
+      "id": "lower",
+      "type": "source.value",
+      "params": {
+        "component": "channel.lower",
+        "period": 2
+      }
+    },
+    {
+      "id": "upper",
+      "type": "source.value",
+      "params": {
+        "component": "channel.upper",
+        "period": 2
+      }
+    },
+    {
+      "id": "level",
+      "type": "state.level_setup",
+      "params": {
+        "mode": "breakout",
+        "expires_after_bars": 3,
+        "invalidation_buffer_pct": 0.0
+      }
+    },
+    {
+      "id": "rvol",
+      "type": "source.value",
+      "params": {
+        "component": "relative_volume",
+        "period": 2
+      }
+    },
+    {
+      "id": "liquid",
+      "type": "fact.compare",
+      "params": {
+        "operator": "gt",
+        "literal": 1.0,
+        "unit": "ratio"
+      }
+    },
+    {
+      "id": "policy",
+      "type": "policy.from_condition",
+      "params": {}
+    },
+    {
+      "id": "agreement",
+      "type": "interp.confluence_and",
+      "params": {}
+    },
+    {
+      "id": "gate",
+      "type": "interp.direction_gate",
+      "params": {
+        "allow_short": false
+      }
+    },
+    {
+      "id": "order",
+      "type": "exec.order_constructor",
+      "params": {
+        "risk_pct": 0.1,
+        "sl_pct": 10.0,
+        "take_profit_mode": "disabled"
+      }
+    },
+    {
+      "id": "price",
+      "type": "source.value",
+      "params": {
+        "component": "close"
+      }
+    },
+    {
+      "id": "exit_condition",
+      "type": "fact.compare",
+      "params": {
+        "operator": "gt",
+        "literal": 113.0,
+        "unit": "price_quote_per_base"
+      }
+    },
+    {
+      "id": "exit_policy",
+      "type": "policy.from_condition",
+      "params": {}
+    },
+    {
+      "id": "exit",
+      "type": "exec.position_exit",
+      "params": {}
+    }
+  ],
+  "connections": [
+    {
+      "from": "width",
+      "from_port": "value",
+      "to": "compressed",
+      "to_port": "left"
+    },
+    {
+      "from": "compressed",
+      "from_port": "condition",
+      "to": "hold",
+      "to_port": "condition"
+    },
+    {
+      "from": "hold",
+      "from_port": "condition",
+      "to": "edge",
+      "to_port": "condition"
+    },
+    {
+      "from": "edge",
+      "from_port": "event",
+      "to": "level",
+      "to_port": "trigger"
+    },
+    {
+      "from": "lower",
+      "from_port": "value",
+      "to": "level",
+      "to_port": "lower"
+    },
+    {
+      "from": "upper",
+      "from_port": "value",
+      "to": "level",
+      "to_port": "upper"
+    },
+    {
+      "from": "rvol",
+      "from_port": "value",
+      "to": "liquid",
+      "to_port": "left"
+    },
+    {
+      "from": "liquid",
+      "from_port": "condition",
+      "to": "policy",
+      "to_port": "condition"
+    },
+    {
+      "from": "level",
+      "from_port": "event",
+      "to": "agreement",
+      "to_port": "events"
+    },
+    {
+      "from": "agreement",
+      "from_port": "agreement",
+      "to": "gate",
+      "to_port": "agreement"
+    },
+    {
+      "from": "policy",
+      "from_port": "policy",
+      "to": "gate",
+      "to_port": "policies"
+    },
+    {
+      "from": "gate",
+      "from_port": "intent",
+      "to": "order",
+      "to_port": "intent"
+    },
+    {
+      "from": "price",
+      "from_port": "value",
+      "to": "exit_condition",
+      "to_port": "left"
+    },
+    {
+      "from": "exit_condition",
+      "from_port": "condition",
+      "to": "exit_policy",
+      "to_port": "condition"
+    },
+    {
+      "from": "exit_policy",
+      "from_port": "policy",
+      "to": "exit",
+      "to_port": "condition"
+    }
+  ]
+}

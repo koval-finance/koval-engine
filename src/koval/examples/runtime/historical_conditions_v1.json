@@ -1,0 +1,98 @@
+{
+  "schema": "koval_historical_conditions_fixture_v1",
+  "expectations": "Hand-derived literal projections; omitted state/evidence fields are compared between uninterrupted and restored execution.",
+  "values": [
+    {
+      "spec": {"component": "relative_volume", "period": 2},
+      "arrays": {"closes": [1, 1, 1], "volumes": [10, 20, 30]},
+      "expected": {"value": 2.0, "unit": "ratio", "readiness": "ready", "reason": null, "as_of_ms": 180000, "available_at_ms": 180000, "formula_version": "relative_volume_v1:{\"component\":\"relative_volume\",\"period\":2,\"std_dev\":null,\"offset_bars\":0,\"context\":\"primary\"}"}
+    },
+    {
+      "spec": {"component": "relative_volume", "period": 2},
+      "arrays": {"closes": [1, 1, 1], "volumes": [10, 20, 0]},
+      "expected": {"value": 0.0, "unit": "ratio", "readiness": "ready", "reason": null}
+    },
+    {
+      "spec": {"component": "relative_volume", "period": 2},
+      "arrays": {"closes": [1, 1, 1], "volumes": [0, 0, 30]},
+      "expected": {"value": null, "readiness": "missing", "reason": "zero_volume_mean"}
+    },
+    {
+      "spec": {"component": "adx", "period": 2},
+      "arrays": {"closes": [1, 2, 3, 4, 5], "highs": [2, 3, 4, 5, 6], "lows": [0, 1, 2, 3, 4]},
+      "expected": {"value": 100.0, "unit": "dimensionless", "readiness": "ready", "reason": null}
+    },
+    {
+      "spec": {"component": "adx", "period": 2},
+      "arrays": {"closes": [5, 5, 5, 5, 5], "highs": [6, 6, 6, 6, 6], "lows": [4, 4, 4, 4, 4]},
+      "expected": {"value": 0.0, "unit": "dimensionless", "readiness": "ready", "reason": null}
+    },
+    {
+      "spec": {"component": "adx", "period": 2},
+      "arrays": {"closes": [5, 5, 5, 5, 5], "highs": [5, 5, 5, 5, 5], "lows": [5, 5, 5, 5, 5]},
+      "expected": {"value": null, "readiness": "warming_up", "reason": "insufficient_valid_dx"}
+    }
+  ],
+  "replay": {
+    "graph": {
+      "blocks": [
+        {"id": "source", "type": "source.value", "params": {"component": "relative_volume", "period": 2}},
+        {"id": "compare", "type": "fact.compare", "params": {"operator": "gt", "literal": 1.0, "unit": "ratio"}},
+        {"id": "hold", "type": "state.condition_hold", "params": {"bars": 3}},
+        {"id": "edge", "type": "fact.condition_edge", "params": {}}
+      ],
+      "connections": [
+        {"from": "source", "from_port": "value", "to": "compare", "to_port": "left"},
+        {"from": "compare", "from_port": "condition", "to": "hold", "to_port": "condition"},
+        {"from": "hold", "from_port": "condition", "to": "edge", "to_port": "condition"}
+      ]
+    },
+    "candles": [
+      [0, 1, 2, 0, 1, 10],
+      [60000, 1, 2, 0, 1, 10],
+      [120000, 1, 2, 0, 1, 20],
+      [180000, 1, 2, 0, 1, 30],
+      [240000, 1, 2, 0, 1, 40],
+      [300000, 1, 2, 0, 1, 10],
+      [360000, 1, 2, 0, 1, 60]
+    ],
+    "expected_trace": [
+      {"value": null, "hold": null, "edge": false},
+      {"value": null, "hold": null, "edge": false},
+      {"value": 2.0, "hold": false, "edge": false},
+      {"value": 2.0, "hold": false, "edge": false},
+      {"value": 1.6, "hold": true, "edge": true},
+      {"value": 0.2857142857142857, "hold": false, "edge": false},
+      {"value": 2.4, "hold": false, "edge": false}
+    ],
+    "snapshot_after_rows": 4,
+    "expected_snapshot": {
+      "version": 1,
+      "stepped_bar": 3,
+      "states": {
+        "hold": {"version": 1, "formula_version": "condition_hold_v1", "bars": 3, "count": 2, "last_timestamp_ms": 180000, "last_bar_index": 3, "output": {"value": false, "readiness": "ready"}},
+        "edge": {"version": 1, "formula_version": "condition_edge_v1", "last_timestamp_ms": 180000, "previous": {"value": false, "source_node_id": "hold", "timestamp_ms": 180000}}
+      }
+    },
+    "expected_final_state": {
+      "version": 1,
+      "stepped_bar": 6,
+      "states": {
+        "hold": {"version": 1, "formula_version": "condition_hold_v1", "bars": 3, "count": 1, "last_timestamp_ms": 360000, "last_bar_index": 6, "output": {"value": false, "readiness": "ready"}},
+        "edge": {"version": 1, "formula_version": "condition_edge_v1", "last_timestamp_ms": 360000, "previous": {"value": false, "source_node_id": "hold", "timestamp_ms": 360000}}
+      }
+    },
+    "expected_event": {
+      "kind": "condition_edge", "direction": "bullish", "price_levels": [], "source_node_id": "edge", "timestamp_ms": 240000,
+      "metadata": {
+        "formula_version": "condition_edge_v1", "state_version": 1,
+        "previous": {"value": false, "unit": "ratio", "source_node_id": "hold", "timestamp_ms": 180000, "as_of_ms": 240000, "available_at_ms": 240000},
+        "current": {"value": true, "unit": "ratio", "source_node_id": "hold", "timestamp_ms": 240000, "as_of_ms": 300000, "available_at_ms": 300000}
+      }
+    },
+    "expected_evidence": {
+      "hold": {"node_type": "state.condition_hold", "role": "state", "params": {"bars": 3}, "result": "passed", "values": {"count": 3, "required_bars": 3, "value": true, "readiness": "ready"}, "outputs": {"condition": {"value": true, "source_node_id": "hold"}}},
+      "edge": {"node_type": "fact.condition_edge", "result": "passed", "outputs": {"event": {"kind": "condition_edge", "source_node_id": "edge", "price_levels": []}}, "values": {"readiness": "ready", "previous": {"value": false}, "current": {"value": true}}}
+    }
+  }
+}

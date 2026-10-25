@@ -43,6 +43,12 @@ It also fixes Spot history pagination, polling-feed failure/stop handling,
 UTC daily risk baselines, paper protection chronology and exact Spot residuals.
 These accounting and simulation corrections can change prior results; retain
 the exact engine and plugin versions when reproducing a run.
+Version 0.12.7 adds bounded Spot DCA/Grid contracts and a dedicated paper lane,
+historical numeric values, ADX/relative volume, condition hold/edge nodes, and
+frozen historical level setups. Historical features require independently
+verified plugin support; graph fixtures and checkpoints do not certify adapter
+execution or resume. The engine protocol remains 2, and the existing sandbox
+and injected Spot Testnet execution boundaries remain unchanged.
 See the [runtime and plugin migration contract](https://github.com/koval-finance/koval-engine/blob/main/agents_docs/runtime_contract.md)
 and the [execution realism review](https://github.com/koval-finance/koval-engine/blob/main/agents_docs/realism_review.md).
 
@@ -284,9 +290,39 @@ semantics.
 
 ### Historical numeric graph primitives
 
+Historical condition gates add `source.value(component="adx")` (Wilder, default 14,
+dimensionless) and `component="relative_volume"` (current volume / preceding 20
+confirmed bars, ratio). Existing `bb.width_pct` supplies BB compression.
+`state.condition_hold(bars=N)` requires 1..400 consecutive ready true conditions;
+`fact.condition_edge` emits one bullish event on consecutive ready false -> true.
+Hold3 emits false/false/true on three true inputs and its edge fires on the third.
+Unavailable input stays null and resets state. These gates do not change fills,
+fees, budgets or order priorities.
+
+`koval.strategy.graph.condition_history.condition_capabilities()` exposes
+versioned historical condition schemas/formulas/state. `graph_condition_history_requirements(graph)`
+separates physical retained rows from temporal replay latency. Extended source
+demand >1000 refuses at graph assembly; streamed hold latency can exceed 1000.
+Plugin negotiation remains `numeric_values_v1`; new schema discovery certifies
+engine semantics only. Adapter execution/resume and app adoption still require
+independent verification. Paper/Testnet/live and alternate contexts remain closed.
+The packaged `examples/graphs/historical_condition_hold_edge.json` graph and
+`examples/runtime/historical_conditions_v1.json` literal replay fixtures show
+the public interfaces without an execution terminal.
+
 Primary-feed OHLCV, EMA, ATR, Bollinger and previous-channel values can feed typed
 comparisons, signed distance and consecutive crossings. The explicit condition
 policy bridge can feed existing entry/position-exit consumers. These new graphs
 require `numeric_values_v1` from the historical host; MIT LiveEngine refuses them.
 See [numeric contracts](https://github.com/koval-finance/koval-engine/blob/main/agents_docs/numeric_values.md) for readiness, exact APIs,
 ideal-close timing, history budgets and execution limitations.
+
+## Frozen historical level setups
+
+One `state.level_setup` owner freezes causal price bounds at a trigger close and
+consumes at most one later bullish opportunity after sweep reclaim, breakout retest
+or breakout. Strict schemas, inclusive expiry, primary-gap/price invalidation,
+bounded validated checkpoints and semantic/history discovery are documented in
+[the level contract](https://github.com/koval-finance/koval-engine/blob/main/agents_docs/historical_levels.md).
+This is primary historical ideal-close semantics; plugin execution and resume are
+not certified by the semantic report. No new order, stop, sizing or detector exists.

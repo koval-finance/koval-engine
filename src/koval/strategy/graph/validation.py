@@ -140,6 +140,21 @@ def validate_graph(graph: dict) -> None:
                 )
 
     _validate_scalar_connections(blocks, connections, incoming_counts)
+    for b in blocks:
+        if b["type"] != "state.level_setup":
+            continue
+        for c in connections:
+            if c["to"] != b["id"] or c["to_port"] not in {"lower", "upper"}:
+                continue
+            if c["to_port"] == "upper" and b["params"]["mode"] == "breakout_retest":
+                raise GraphValidationError(
+                    "breakout_retest requires a single lower level; omit upper"
+                )
+            source = next(block for block in blocks if block["id"] == c["from"])
+            if source["type"] == "source.value":
+                params = NODE_CATALOG["source.value"].params_schema(**source["params"])
+                if params.unit != "price_quote_per_base":
+                    raise GraphValidationError("level scalar unit identity requires price units")
 
 
 def _validate_scalar_connections(blocks, connections, incoming_counts):

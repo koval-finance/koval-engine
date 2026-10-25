@@ -45,6 +45,7 @@ class GraphExecutor:
         self._edges = edges
         self._order = order  # node ids in topological order
         self.state = NodeStateStore()
+        self._level_bindings: dict[str, str] = {}
         # incoming edges grouped by destination node id
         self._incoming: dict[str, list[_Edge]] = {nid: [] for nid in self._nodes}
         for e in edges:
@@ -55,21 +56,52 @@ class GraphExecutor:
     @classmethod
     def build(cls, graph: dict) -> GraphExecutor:
         validate_graph(graph)
+        # Historical-condition hosts bind a physical 1000-row source window. Keep
+        # legacy numeric graphs' larger explicit host-window contract intact.
+        if any(
+            b["type"] in {"state.condition_hold", "fact.condition_edge", "state.level_setup"}
+            or (
+                b["type"] == "source.value"
+                and (b.get("params") or {}).get("component") in {"adx", "relative_volume"}
+            )
+            for b in graph["blocks"]
+        ):
+            from koval.strategy.block_assembler import GraphValidationError
+            from koval.strategy.graph.values import graph_required_history_bars
+
+            if graph_required_history_bars(graph) > 1000:
+                raise GraphValidationError(
+                    "Condition source history exceeds the 1000-bar physical window"
+                )
+        from koval.strategy.graph.level_identity import level_graph_binding
+
+        bindings = {
+            b["id"]: level_graph_binding(graph, b["id"])
+            for b in graph["blocks"]
+            if b["type"] == "state.level_setup"
+        }
         nodes: list[GraphNode] = []
         for b in graph["blocks"]:
             spec = NODE_CATALOG[b["type"]]
             params = spec.params_schema(**(b.get("params") or {}))
-            nodes.append(
-                GraphNode(
-                    b["id"], spec, params, spec.factory(params), b.get("source_node_ids", [b["id"]])
+            evaluate = spec.factory(params)
+            if spec.type == "state.level_setup":
+                from koval.strategy.nodes.levels import level_setup_evaluator
+
+                evaluate = level_setup_evaluator(
+                    params, node_id=b["id"], graph_binding_hash=bindings[b["id"]]
                 )
+            nodes.append(
+                GraphNode(b["id"], spec, params, evaluate, b.get("source_node_ids", [b["id"]]))
             )
         edges = [
             _Edge(c["from"], c["from_port"], c["to"], c["to_port"])
             for c in (graph.get("connections") or [])
         ]
         order = cls._topo_order([n.node_id for n in nodes], edges)
-        return cls(nodes, edges, order)
+        executor = cls(nodes, edges, order)
+        executor._level_bindings = bindings
+        return executor
 
     @staticmethod
     def _topo_order(ids: list[str], edges: list[_Edge]) -> list[str]:
@@ -91,7 +123,68 @@ class GraphExecutor:
             ready.sort()
         return out
 
+    def validate_level_context(self, ctx: BarContext) -> bool:
+        """Preflight level caches; legacy graphs retain their original path."""
+        from koval.strategy.graph.level_state import (
+            level_context_duplicate,
+            validate_level_graph_checkpoint,
+            validate_level_setup_state,
+        )
+
+        for nid in self._level_bindings:
+            owner = self.state._states.get(nid)
+            if owner:
+                validate_level_graph_checkpoint(
+                    self,
+                    {
+                        "version": 1,
+                        "states": self.state._states,
+                        "stepped_bar": owner["last_bar_index"],
+                    },
+                )
+                break
+        duplicates = []
+        for nid, binding in self._level_bindings.items():
+            node = self._nodes[nid]
+            state = self.state._states.get(nid, {})
+            validate_level_setup_state(node.params, state, node_id=nid, graph_binding_hash=binding)
+            duplicates.append(level_context_duplicate(ctx, state))
+        if any(duplicates) and not all(duplicates):
+            raise ValueError("level graph checkpoint cursor mismatch")
+        return bool(duplicates) and all(duplicates)
+
+    def _duplicate_level_step(self, ctx: BarContext) -> StepResult:
+        from copy import deepcopy
+
+        from koval.strategy.graph.entities import LevelSnapshotV1
+        from koval.strategy.graph.evidence import observe
+
+        # Upstream momentary events suppress their duplicate independently. Do not
+        # reinterpret that empty event list as a changed trigger or rerun a chain.
+        outputs = {
+            nid: {name: None for name in node.spec.output_ports}
+            for nid, node in self._nodes.items()
+        }
+        for nid in self._level_bindings:
+            level = LevelSnapshotV1.model_validate(deepcopy(self.state._states[nid]["output"]))
+            outputs[nid]["level"] = level
+            if ctx.evidence is not None:
+                ctx.evidence.begin(self._nodes[nid], ctx, {})
+                observe(
+                    ctx,
+                    inputs=[],
+                    values={"level": level.model_dump(), "reason": "duplicate_cursor"},
+                    result="recorded",
+                )
+                ctx.evidence.finish(outputs[nid])
+        return StepResult(
+            entities_by_node=outputs,
+            decision_context=None if ctx.evidence is None else ctx.evidence.snapshot(ctx),
+        )
+
     def step(self, ctx: BarContext) -> StepResult:
+        if self._level_bindings and self.validate_level_context(ctx):
+            return self._duplicate_level_step(ctx)
         result = StepResult()
         outputs: dict[str, dict[str, Entity | None]] = {}
         for nid in self._order:

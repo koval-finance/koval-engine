@@ -59,9 +59,9 @@ def build_graph_strategy(
                 raise ValueError(f"numeric graph requires at least {required} history bars")
             self._indicators = PreparedIndicators.build(typed_graph, candles, history_bars)
 
-        def _ctx(self) -> BarContext:
-            account = self.account_snapshot()
-            if account is None:
+        def _ctx(self, *, level_guard=False) -> BarContext:
+            account = None if level_guard else self.account_snapshot()
+            if account is None and not level_guard:
                 if not self._account_seeded:
                     self._account = PlatformAccountState(starting_balance=self.account_value)
                     self._account_seeded = True
@@ -92,16 +92,18 @@ def build_graph_strategy(
                 symbol=str(self.config.get("symbol", "")),
                 account=account,
                 spot_runtime=getattr(self, "spot_runtime", None),
-                evidence=DecisionRecorder(),
+                evidence=None if level_guard else DecisionRecorder(),
                 decision_timestamp_ms=getattr(self, "decision_timestamp_ms", None),
                 history_start_ms=getattr(self, "history_start_ms", None),
                 timeframe=self.config.get("timeframe"),
                 indicators=None
-                if self._indicators is None or self.closes is None
+                if level_guard or self._indicators is None or self.closes is None
                 else self._indicators.at(self.timestamp_ms, len(self.closes)),
             )
 
         def _ensure_stepped(self) -> StepResult:
+            if self._executor._level_bindings:
+                self._executor.validate_level_context(self._ctx(level_guard=True))
             if self.bar_index != self._stepped_bar:
                 self._result = self._executor.step(self._ctx())
                 self._stepped_bar = self.bar_index
@@ -147,12 +149,30 @@ def build_graph_strategy(
             }
 
         def restore_graph_state(self, state):
+            from koval.strategy.nodes.condition_reducers import validate_condition_graph_checkpoint
+
+            validate_condition_graph_checkpoint(self._executor, state)
+            if self._executor._level_bindings:
+                from koval.strategy.graph.level_state import validate_level_graph_checkpoint
+
+                validate_level_graph_checkpoint(self._executor, state)
             if (
                 set(state) != {"version", "states", "stepped_bar"}
                 or state["version"] != 1
                 or set(state["states"]) - set(self._executor._nodes)
             ):
                 raise ValueError("graph state binding mismatch")
+            from koval.strategy.nodes.levels import validate_level_setup_state
+
+            for node_id, node_state in state["states"].items():
+                node = self._executor._nodes[node_id]
+                if node.spec.type == "state.level_setup":
+                    validate_level_setup_state(
+                        node.params,
+                        node_state,
+                        node_id=node_id,
+                        graph_binding_hash=self._executor._level_bindings[node_id],
+                    )
             self._executor.state._states = deepcopy(state["states"])
             self._stepped_bar = state["stepped_bar"]
             self._result = None
