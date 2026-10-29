@@ -13,6 +13,7 @@ import uuid
 from collections.abc import Callable
 from copy import copy, deepcopy
 from dataclasses import asdict, dataclass, field, replace
+from threading import RLock
 
 import numpy as np
 
@@ -46,8 +47,14 @@ from koval.engine.run_identity import (
 )
 from koval.engine.runtime_journal import RuntimeJournal
 from koval.engine.spot_account import decimal_value, spot_decimal_context
-from koval.engine.spot_contract import SPOT_TESTNET, validate_spot_selection
+from koval.engine.spot_contract import (
+    SPOT_PRODUCTION,
+    SPOT_TARGETS,
+    SpotIdentity,
+    validate_spot_selection,
+)
 from koval.engine.spot_execution import SpotExecution
+from koval.engine.spot_serialization import serialized_spot
 from koval.exchanges.auth import safe_exception_message
 from koval.exchanges.base import timeframe_ms
 from koval.exchanges.execution_compatibility import compatibility_for
@@ -77,6 +84,9 @@ class LiveEngineConfig:
     exchange: str | None = None
     end_of_data_policy: str = "flatten_at_last_close"
     runtime_contract: dict | None = None
+    spot_identity: SpotIdentity | None = None
+    spot_software_binding: str | None = None
+    spot_claim_generation: str | None = None
 
 
 def _noop(_x: object) -> None:
@@ -327,6 +337,7 @@ class LiveEngine:
         on_audit: Callable[[dict], None] = _noop,
         on_incident: Callable[[dict], None] = _noop,
         on_record: Callable[[dict], None] | None = None,
+        spot_host=None,
     ) -> None:
         self._boundaries = resolve_runtime_boundaries(config.runtime_contract)
         if self._boundaries is not None:
@@ -358,11 +369,18 @@ class LiveEngine:
         self._config = config
         self._terminal_policy: str | None = None
         self._session_id = session_id or uuid.uuid4().hex
-        is_spot = broker is not None and broker.target == SPOT_TESTNET
+        self._spot_host = spot_host
+        self._spot_lock = RLock()
+        self._spot_work_depth = 0
+        self._spot_records = []
+        self._spot_archive_segments = []
+        is_spot = broker is not None and broker.target in SPOT_TARGETS
 
         def spot_archive(record):
             try:
                 on_record(record)
+                if broker.target == SPOT_PRODUCTION:
+                    self._spot_records.append(deepcopy(record))
             except Exception:
                 self._spot_storage_failed()
                 raise
@@ -370,6 +388,20 @@ class LiveEngine:
         self._journal = RuntimeJournal(
             f"{self._session_id}:segment:{uuid.uuid4().hex}" if is_spot else self._session_id,
             spot_archive if is_spot and on_record is not None else on_record,
+            context={
+                "identity": asdict(broker.spot_identity),
+                "session_id": self._session_id,
+                "binding": {
+                    "strategy_sha256": content_sha256(graph),
+                    "timeframe": config.timeframe,
+                    "software": config.spot_software_binding,
+                    "claim_generation": config.spot_claim_generation,
+                },
+            }
+            if broker is not None
+            and broker.target == SPOT_PRODUCTION
+            and isinstance(getattr(broker, "spot_identity", None), SpotIdentity)
+            else None,
         )
         self._last_input: np.ndarray | None = None
         self._ledger_cursor = 0
@@ -394,13 +426,13 @@ class LiveEngine:
                 exchange=config.exchange,
             )
         )
-        if self._broker.target == SPOT_TESTNET:
+        if self._broker.target in SPOT_TARGETS:
             validate_spot_selection(
                 self._broker, config, graph, archive_enabled=on_record is not None
             )
         if canonical_market(config.market) == "spot" and self._broker.target not in {
             "paper",
-            SPOT_TESTNET,
+            *SPOT_TARGETS,
         }:
             raise ValueError("unsupported Spot execution target")
         self._validate_broker_config(config)
@@ -502,15 +534,27 @@ class LiveEngine:
                 self._broker,
                 session_id=self._session_id,
                 capital=str(config.initial_capital),
-                binding={"strategy_sha256": self._strategy_sha256, "timeframe": config.timeframe},
+                binding={
+                    "strategy_sha256": self._strategy_sha256,
+                    "timeframe": config.timeframe,
+                    **(
+                        {
+                            "software": config.spot_software_binding,
+                            "claim_generation": config.spot_claim_generation,
+                        }
+                        if self._broker.target == SPOT_PRODUCTION
+                        else {}
+                    ),
+                },
                 emit=self._spot_emit,
                 account=self._account,
             )
-            if self._broker.target == SPOT_TESTNET
+            if self._broker.target in SPOT_TARGETS
             else None
         )
 
     @property
+    @serialized_spot()
     @spot_decimal_context
     def spot_account(self) -> dict:
         """Exact Spot balances and explicit valuation/closure status, read-only."""
@@ -536,12 +580,25 @@ class LiveEngine:
         }
 
     @property
+    @serialized_spot()
     def spot_state(self) -> dict:
         """Host-persistable exposure facts; restore still requires fresh venue proof."""
         if self._spot is None:
             raise ValueError("Spot Testnet broker required")
-        return {"execution": self._spot.export_state(), "archive_checkpoint": self.checkpoint}
+        return {
+            "execution": self._spot.export_state(),
+            "archive_checkpoint": self.checkpoint,
+            **(
+                {
+                    "archive_segments": deepcopy(self._spot_archive_segments)
+                    + [{"checkpoint": self.checkpoint, "records": deepcopy(self._spot_records)}]
+                }
+                if self._spot.production
+                else {}
+            ),
+        }
 
+    @serialized_spot(control=True)
     def reconcile_spot(self) -> dict:
         """Perform the fresh, read-only Spot preflight/recovery gate."""
         if self._spot is None:
@@ -550,6 +607,65 @@ class LiveEngine:
         self._sync_spot_position()
         return self.spot_state
 
+    @serialized_spot(control=True)
+    def halt_spot_entries(self, reason: str) -> dict:
+        """Permanently inhibit entries, preserving exposure and supervision."""
+        if self._spot is None:
+            raise ValueError("injected Spot broker required")
+        try:
+            self._spot.halt_entries(reason)
+        finally:
+            self._sync_spot_position()
+        return self.spot_state
+
+    @serialized_spot(control=True)
+    def observe_spot(self) -> dict:
+        """Observe actual fills/orders without placing or cancelling orders."""
+        if self._spot is None:
+            raise ValueError("injected Spot broker required")
+        try:
+            self._spot.observe()
+        finally:
+            self._sync_spot_position()
+        return self.spot_state
+
+    @serialized_spot(control=True)
+    def supervise_spot(self) -> dict:
+        """Supervise bounded protection/containment without evaluating entries."""
+        if self._spot is None:
+            raise ValueError("injected Spot broker required")
+        try:
+            self._spot.poll()
+        finally:
+            self._sync_spot_position()
+        return self.spot_state
+
+    @serialized_spot(control=True)
+    def retry_spot_close(self, *, attempt_id: str, expected_state_hash: str) -> dict:
+        """Request a separately authorized disposal of a proved terminal remainder."""
+        if self._spot is None:
+            raise ValueError("injected Spot broker required")
+        try:
+            return self._spot.controls.retry_close(
+                self._spot_host, attempt_id=attempt_id, expected_state_hash=expected_state_hash
+            )
+        finally:
+            self._sync_spot_position()
+
+    @serialized_spot(control=True)
+    def finish_spot(self, *, disposition: str, evidence_hash: str) -> dict:
+        """Journal host-verified terminal custody without a venue mutation."""
+        if self._spot is None:
+            raise ValueError("injected Spot broker required")
+        try:
+            self._spot.controls.finish(
+                self._spot_host, disposition=disposition, evidence_hash=evidence_hash
+            )
+        finally:
+            self._sync_spot_position()
+        return self.spot_state
+
+    @serialized_spot(control=True)
     def restore_spot(self, state: dict) -> None:
         """Restore into a fresh engine for supervision/closure with entries halted.
 
@@ -559,9 +675,27 @@ class LiveEngine:
         """
         if self._spot is None:
             raise ValueError("Spot Testnet broker required")
-        self._spot.restore(state["execution"])
-        self._journal.write("spot_restore", 0, {"source_checkpoint": state["archive_checkpoint"]})
+        try:
+            if self._spot.production:
+                from koval.engine.spot_archive import verify_spot_archive
 
+                verify_spot_archive(state, self._spot.context, self._spot_host)
+            self._spot.restore(state["execution"])
+            if self._spot.production:
+                self._spot_archive_segments = deepcopy(state["archive_segments"])
+            self._journal.write(
+                "spot_restore", 0, {"source_checkpoint": state["archive_checkpoint"]}
+            )
+            if self._spot.production:
+                self._spot._save()
+                self._sync_spot_position()
+        except Exception:
+            if self._spot.production:
+                self._spot.persistence_failed = True
+                self._spot._halt()
+            raise
+
+    @serialized_spot(control=True)
     def close_spot(self) -> dict:
         """Request one recorded close attempt and require confirmed flatness."""
         if self._spot is None:
@@ -713,7 +847,10 @@ class LiveEngine:
                 raise ValueError(f"paper broker evidence does not match live config: {name}")
 
     def _spot_execution_metadata(self) -> dict:
-        return {"version": "binance_spot_testnet_v1", "identity": asdict(self._spot.identity)}
+        return {
+            "version": f"{self._spot.identity.target}_v{self._spot.identity.contract_version}",
+            "identity": asdict(self._spot.identity),
+        }
 
     def _run_identity(self) -> dict:
         return build_run_identity(
@@ -759,7 +896,7 @@ class LiveEngine:
         return self._window.ts[-1] if self._window.ts else None
 
     def run(self, feed: LiveFeed, stop: StopSignal) -> None:
-        if self._spot is not None and not self._spot.ready:
+        if self._spot is not None and not self._spot.ready and not self._spot.controls.terminal:
             raise RuntimeError("Spot Testnet requires reconcile_spot before run")
         self._emit(
             EventType.SESSION_START,
@@ -815,7 +952,10 @@ class LiveEngine:
         finally:
             self._emit(EventType.SESSION_END, {})
 
+    @serialized_spot()
     def _process_bar(self, row: object) -> None:
+        if self._spot is not None and self._spot.controls.terminal:
+            return
         candidate = _validate_ohlcv_row(
             row, previous_timestamp_ms=None, timeframe=self._config.timeframe
         )
@@ -992,7 +1132,10 @@ class LiveEngine:
         side = "buy" if direction == "long" else "sell"
         intent_id = f"entry-{self._bar_index}-{self._trade_id + 1}"
         client_order_id = make_client_order_id(
-            self._session_id, intent_id, self._broker.target, "entry"
+            self._session_id,
+            intent_id,
+            self._spot.id_namespace if self._spot is not None else self._broker.target,
+            "entry",
         )
         intent = BrokerOrderIntent(
             session_id=self._session_id,
@@ -1024,6 +1167,10 @@ class LiveEngine:
             },
         )
         if self._spot is not None:
+            if self._spot.production:
+                intent = replace(
+                    intent, metadata={**intent.metadata, "spot_context": self._spot.context}
+                )
             try:
                 self._spot.submit(intent)
                 self._spot.poll()
@@ -1104,6 +1251,7 @@ class LiveEngine:
             self._on_open(fill)
             self._poll_broker_fills()
 
+    @serialized_spot(control=True)
     def watch_orders(self) -> None:
         """Poll the broker between bars so a limit or stop entry is protected
         within seconds of its fill rather than at the next bar close.
@@ -1584,12 +1732,17 @@ class LiveEngine:
             "run_identity": self._run_identity(),
         }
 
+    @serialized_spot()
     def _finalize(self, *, require_confirmation: bool = True, end_of_data: bool = False) -> None:
         if self._spot is not None:
+            if self._spot.controls.terminal:
+                self._emit_status(terminal=True)
+                return
             # On any prior uncertainty the host must reconcile; finalization
             # must never turn an exception into another automatic mutation.
             if not self._spot.uncertain and not self._spot.flat_confirmed:
-                self.close_spot()
+                self._spot.close()
+                self._sync_spot_position()
             self._emit_status(terminal=True)
             if require_confirmation and not self._spot.flat_confirmed:
                 raise RuntimeError("Spot closure unconfirmed")
@@ -1651,8 +1804,11 @@ class LiveEngine:
             return False
         return True
 
+    @serialized_spot()
     def _contain_exposure(self, reason: str, *, retry: bool = False) -> None:
         if self._spot is not None:
+            if self._spot.controls.terminal:
+                return
             self._spot.halted = True
             self._spot.uncertain = True
             self._spot.ready = False

@@ -15,13 +15,16 @@ from koval.engine.run_identity import content_sha256
 
 
 class RuntimeJournal:
-    def __init__(self, session_id: str, sink: Callable[[dict], None] | None) -> None:
+    def __init__(
+        self, session_id: str, sink: Callable[[dict], None] | None, *, context=None
+    ) -> None:
         self.session_id = session_id
         self.sink = sink
         self.sequence = 0
         self.sha256: str | None = None
         self.accepted_bar: int | None = None
         self.processed_bar: int | None = None
+        self.context = deepcopy(context)
 
     def write(self, kind: str, timestamp_ms: int, payload: dict) -> str:
         sequence = self.sequence + 1
@@ -37,6 +40,8 @@ class RuntimeJournal:
             "previous_sha256": self.sha256,
             "payload": deepcopy(payload),
         }
+        if self.context is not None:
+            record["spot_context"] = deepcopy(self.context)
         digest = content_sha256(record)
         record["sha256"] = digest
         if self.sink is not None:

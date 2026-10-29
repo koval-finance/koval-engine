@@ -3,7 +3,8 @@
 Version 1, introduced in engine 0.12.6. This is a transport-free broker port for
 one allocated Spot account session and one position. The existing LiveEngine
 strategy evaluator is reused. The engine contains no Spot REST client, credentials,
-endpoint selector, venue simulator, or production execution target.
+endpoint selector or venue simulator. Production is a separate explicit v2
+[injected contract](spot_production_contract.md); Testnet defaults and IDs remain v1.
 
 The built-in `build_broker("binance_spot_testnet", ...)` still rejects the target
 before credentials or network access. Inject an implementation of `SpotBroker`

@@ -1,6 +1,6 @@
 # koval-engine
 
-An open engine for building and validating trading strategies as dataflow graphs. Validate strategies, run paper simulations, and integrate a pluggable backtest engine. There is no real-money code path.
+An open engine for building and validating trading strategies as dataflow graphs. Validate strategies, run paper simulations, and integrate a pluggable backtest engine. Built-in brokers provide no production trading transport.
 
 [![CI](https://github.com/koval-finance/koval-engine/actions/workflows/ci.yml/badge.svg)](https://github.com/koval-finance/koval-engine/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/koval-engine.svg)](https://pypi.org/project/koval-engine/)
@@ -49,6 +49,14 @@ frozen historical level setups. Historical features require independently
 verified plugin support; graph fixtures and checkpoints do not certify adapter
 execution or resume. The engine protocol remains 2, and the existing sandbox
 and injected Spot Testnet execution boundaries remain unchanged.
+Version 0.12.8 adds an explicit host-owned `binance_spot_live_internal` v2 port,
+with bound account/session/software identity, entry halt, observation, bounded
+supervision, host-authorized residual disposal, terminal custody and verified
+archive restore. It provides no transport or credentials; the built-in factory
+still accepts only `paper` and `binance_sandbox`, and Spot Testnet retains v1.
+Hosts must independently validate durable storage, authority and venue behavior;
+offline conformance does not authorize trading. See the
+[Spot production contract](https://github.com/koval-finance/koval-engine/blob/main/agents_docs/spot_production_contract.md).
 See the [runtime and plugin migration contract](https://github.com/koval-finance/koval-engine/blob/main/agents_docs/runtime_contract.md)
 and the [execution realism review](https://github.com/koval-finance/koval-engine/blob/main/agents_docs/realism_review.md).
 
@@ -170,7 +178,7 @@ A backtest result is a claim about money. When the engine that produced it is cl
 
 The platform's premise is pluggability: blocks, exchanges, data sources, and the backtest engine itself are meant to be swappable. That only works if the contracts are public and a third party can implement one without asking permission. A closed engine with a plugin API is a plugin API in name only.
 
-The "no real-money path" guarantee is worth something only if it is verifiable. This repository publishes the allowlists and the tests that enforce them ([`tests/safety/`](https://github.com/koval-finance/koval-engine/tree/main/tests/safety)), so the guarantee is evidence rather than a promise.
+The built-in transport restriction is worth something only if it is verifiable. This repository publishes the allowlists and the tests that enforce them ([`tests/safety/`](https://github.com/koval-finance/koval-engine/tree/main/tests/safety)), so the guarantee is evidence rather than a promise.
 
 Finally, keeping the engine separate from the hosted product keeps the open version complete. The commercial product sells hosting, accounts, and scale — not the ability to compute a moving average.
 
@@ -194,7 +202,9 @@ Read this before trusting a number it prints.
 
 - **Sandbox execution.** The built-in Binance USD-M Futures testnet broker accepts market, limit and stop entries. Conditional orders use Algo Service by default and fills are read from the triggered child order. Every entry requires a full stop-loss/take-profit bracket, and protection is confirmed immediately after a full fill; a working entry is supervised independently of blocked or retrying market-data requests. Venue commissions are read from `userTrades` and are never converted from another asset. A partial fill triggers containment instead of being adopted as a running strategy position. Signed requests support measured server-time skew; excessive skew and exhausted market-data retries fail with stable reasons.
 - **Execution scope.** The CLI and built-in Binance sandbox broker target futures. Data adapters serve both spot and futures, selected by `exchange_type`. Fees for a venue and market without a built-in schedule must be passed explicitly — `resolve_execution_settings` raises rather than defaulting to zero. Paper supports long-only spot at leverage one; the built-in exchange sandbox does not execute spot orders.
-- **No real-money trading.** The built-in factory allows only `paper` and `binance_sandbox`; explicit host-owned `binance_spot_testnet` injection follows the narrow published contract. WhiteBIT execution fails closed. These boundaries are enforced in code and pinned by safety tests.
+- **No built-in production trading transport.** The built-in factory allows only `paper` and `binance_sandbox`; explicit host-owned `binance_spot_testnet` injection follows the narrow published contract. The explicit host-owned `binance_spot_live_internal` port follows the
+  [production contract](https://github.com/koval-finance/koval-engine/blob/main/agents_docs/spot_production_contract.md)
+  and provides no transport or credentials. WhiteBIT execution fails closed. These boundaries are enforced in code and pinned by safety tests.
 
 Paper session metadata includes content identities for actual primary/warm-up
 candles and supplied execution evidence. Set `LiveEngineConfig.exchange` (or use

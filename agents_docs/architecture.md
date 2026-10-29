@@ -12,7 +12,7 @@ For the typed-graph contracts specifically, see
 | `src/koval/engine/market_identity.py`, `run_identity.py` | canonical market vocabulary, evidence content hashes, and actual-input run identity |
 | `src/koval/engine/protection.py` | shared validation of a dynamic protective-bracket snapshot |
 | `src/koval/exchanges/binance_algo.py` | conditional-order translation and actual child-order lookup through the sandbox transport |
-| `src/koval/engine/spot_contract.py`, `spot_account.py`, `spot_execution.py` | injected Spot Testnet port, Decimal accounting and reconciled lifecycle; no transport |
+| `src/koval/engine/spot_contract.py`, `spot_account.py`, `spot_execution.py` | injected Spot contracts, Decimal accounting and reconciled lifecycle; no transport |
 | `src/koval/engine/spot_multi_order/` | pure bounded DCA/Grid, independent reservations and dedicated paper driver; no transport |
 | `src/koval/engine/live_engine.py` | the bar loop for paper and sandbox sessions |
 | `src/koval/engine/live_feed.py` | replay/polling feeds, continuity checks, bounded outage retries, and between-bar supervision |
@@ -133,3 +133,5 @@ Frozen historical levels add one STATE owner, `state.level_setup`, with
 [The public contract](historical_levels.md) separates engine semantic discovery
 from receiving-plugin execution proof; existing interpretation/execution boundaries
 remain responsible for policy, risk and orders.
+
+Injected production controls and recovery use [the production contract](spot_production_contract.md), including explicit host authority and terminal custody.

@@ -11,6 +11,7 @@ depth. Load only what the task calls for.
 | [invariants.md](invariants.md) | every load-bearing rule and the test that pins it |
 | [agent_workflow.md](agent_workflow.md) | the work loop, the git policy, the hard rules |
 | [architecture.md](architecture.md) | module map, execution flow, the plugin seam |
+| [spot_production_contract.md](spot_production_contract.md) | explicit injected cash Spot identity, host authority, observation and terminal custody |
 | [spot_testnet_contract.md](spot_testnet_contract.md) | injected Spot Testnet identity, accounting, protection and public recovery |
 | [spot_multi_order.md](spot_multi_order.md) | bounded DCA/Grid, dedicated paper lane, reservations and adapter fixtures |
 | [runtime_contract.md](runtime_contract.md) | runtime boundaries, market, evidence, identity and sandbox contracts |

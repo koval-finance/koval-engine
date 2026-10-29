@@ -3,18 +3,20 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from dataclasses import asdict
+from dataclasses import asdict, replace
 
 from koval.engine.broker import BrokerOrderIntent, ProtectiveOrderIntent
 from koval.engine.client_order_id import make_client_order_id
+from koval.engine.run_identity import content_sha256
 from koval.engine.spot_account import SpotLedger, decimal_value, spot_decimal_context
 from koval.engine.spot_contract import (
-    SPOT_TESTNET,
+    SPOT_PRODUCTION,
     SpotFee,
     SpotFill,
     SpotProtection,
     SpotReconciliation,
 )
+from koval.engine.spot_control import SpotControls
 
 
 class SpotExecution:
@@ -28,7 +30,22 @@ class SpotExecution:
         self.broker = broker
         self.session_id = session_id
         self.identity = broker.spot_identity
+        self.production = self.identity.target == SPOT_PRODUCTION
         self.binding = deepcopy(binding)
+        self.context = {
+            "identity": asdict(self.identity),
+            "session_id": session_id,
+            "binding": deepcopy(binding),
+        }
+        self.id_namespace = (
+            self.identity.target + ":" + content_sha256(self.context)
+            if self.production
+            else self.identity.target
+        )
+        self.halt_reason = None
+        self.last_report = None
+        self.protection_acks = []
+        self.order_acks = []
         self.emit = emit
         self.ledger = SpotLedger(self.identity, capital, account)
         self.intents: dict[str, BrokerOrderIntent] = {}
@@ -50,6 +67,7 @@ class SpotExecution:
         self.closed_entries: set[str] = set()
         self.cycle_baseline = {"realized": "0", "fees": "0", "event_count": 0}
         self.restored = False
+        self.controls = SpotControls(self)
 
     def _write(self, kind, payload):
         try:
@@ -65,8 +83,67 @@ class SpotExecution:
         self.ready = False
         self.flat_confirmed = False
 
+    def _validate_context(self, context):
+        if self.production and context != self.context:
+            raise ValueError("Spot execution context mismatch")
+
+    def halt_entries(self, reason):
+        if not isinstance(reason, str) or not reason.strip():
+            raise ValueError("Spot halt reason is required")
+        self.halted = True
+        if self.persistence_failed:
+            raise RuntimeError("Spot storage failed; restore a fresh engine")
+        if self.halt_reason is None:
+            self._write("spot_halt", {"reason": reason})
+            self.halt_reason = reason
+        self._save()
+
+    def observe(self):
+        """Consume attributable evidence without any place/cancel or evaluation."""
+        if self.persistence_failed:
+            raise RuntimeError("Spot storage failed; restore a fresh engine")
+        try:
+            self._consume(self.broker.poll_fills(self.session_id))
+            report = self._report()
+            self.protection = None
+            self.ready = False
+            self.uncertain = bool(report.unknown_request_ids)
+            if self.pending or report.unknown_request_ids:
+                self.halted = True
+            elif self.ledger.quantity:
+                try:
+                    self._validate_protection(report.protection, report.open_order_ids)
+                except RuntimeError:
+                    self.halted = True
+                else:
+                    self.protection = report.protection
+            elif self.flat_confirmed:
+                self.ready = True
+            self._save()
+        except Exception:
+            self._halt()
+            raise
+
     def _save(self):
         self._write("spot_state", self.export_state())
+
+    def observation_hash(self):
+        report = asdict(self.last_report) if self.last_report else None
+        if report:
+            # Acquisition revision changes on reads, financial/order facts do not.
+            report.pop("revision")
+            report.pop("fills")
+        return content_sha256(
+            {
+                "context": self.context,
+                "report": report,
+                "intents": [asdict(i) for i in self.intents.values()],
+                "events": [asdict(f) for f in self.ledger.events.values()],
+                "protection_intents": [asdict(i) for i in self.protection_intents],
+                "close_id": self._close_id,
+                "cancel_attempted": sorted(self.cancel_attempted),
+            }
+        )
 
     @spot_decimal_context
     def submit(self, intent: BrokerOrderIntent):
@@ -75,13 +152,14 @@ class SpotExecution:
         if (
             intent.session_id != self.session_id
             or intent.symbol != self.identity.symbol
-            or intent.target != SPOT_TESTNET
+            or intent.target != self.identity.target
             or intent.side != "buy"
             or intent.order_type != "market"
             or intent.role != "entry"
             or intent.client_order_id in self.intents
         ):
             raise ValueError("invalid Spot market entry intent")
+        self._validate_context(intent.metadata.get("spot_context"))
         quantity = decimal_value(intent.quantity, positive=True)
         price = decimal_value(intent.price, positive=True)
         stop = decimal_value(intent.stop_price, positive=True)
@@ -115,11 +193,13 @@ class SpotExecution:
         if (
             ack.session_id != self.session_id
             or ack.client_order_id != intent.client_order_id
-            or ack.target != SPOT_TESTNET
+            or ack.target != self.identity.target
             or ack.status not in {"accepted", "filled", "rejected"}
         ):
             raise ValueError("invalid Spot acknowledgement")
+        self._validate_context(ack.metadata.get("spot_context"))
         self._write("order_ack", asdict(ack))
+        self.order_acks.append(asdict(ack))
 
     def _known_role(self, client_id):
         if client_id in self.intents:
@@ -144,12 +224,16 @@ class SpotExecution:
                 or not fill.exchange_order_id
             ):
                 raise ValueError("unattributed Spot fill")
+            self._validate_context(fill.metadata.get("spot_context"))
             if fill.event_id in self.ledger.events:
                 if self.ledger.events[fill.event_id] != fill:
                     raise ValueError("conflicting Spot event_id")
                 continue
             if decimal_value(fill.quantity or "0"):
                 current_ids = {self.entry_id, self._close_id}
+                current_ids.update(
+                    v["intent"]["client_order_id"] for v in self.controls.disposals.values()
+                )
                 for protection in self.protection_intents:
                     if protection.entry_client_order_id == self.entry_id:
                         current_ids.update(
@@ -173,6 +257,8 @@ class SpotExecution:
             candidate.apply(fill, stop_price=stop)
             self._write("fill", asdict(fill))
             self.ledger.apply(fill, stop_price=stop)
+            if self.production and fill.status == "partial":
+                self.halted = True
             if any(
                 fee.asset not in {self.identity.base_asset, self.identity.quote_asset}
                 and decimal_value(fee.quantity)
@@ -200,7 +286,36 @@ class SpotExecution:
             or not report.revision
         ):
             raise RuntimeError("complete Spot reconciliation required")
+        self._validate_context(report.context)
+        if self.production and (
+            set(report.open_order_ids) & set(report.terminal_order_ids)
+            or len(set(report.terminal_order_ids)) != len(report.terminal_order_ids)
+        ):
+            raise ValueError("conflicting Spot terminal evidence")
         self._consume(report.fills)
+        if self.production:
+            unresolved = (
+                set(self.intents) - set(report.open_order_ids) - set(report.terminal_order_ids)
+            )
+            for intent in self.protection_intents:
+                children = {intent.stop_client_order_id, intent.target_client_order_id}
+                active = (
+                    report.protection is not None
+                    and report.protection.stop_client_order_id == intent.stop_client_order_id
+                    and report.protection.target_client_order_id == intent.target_client_order_id
+                    and children.issubset(report.open_order_ids)
+                )
+                if not active and not (
+                    children.issubset(report.terminal_order_ids)
+                    and intent.metadata["list_client_order_id"] in report.terminal_list_ids
+                ):
+                    unresolved.add(intent.metadata["list_client_order_id"])
+            if self.ledger.events and not report.fees_complete:
+                unresolved.add("unreconciled-fees")
+            report = replace(
+                report,
+                unknown_request_ids=tuple(sorted(set(report.unknown_request_ids) | unresolved)),
+            )
         if (
             decimal_value(report.quote_balance) != self.ledger.cash
             or decimal_value(report.base_quantity) != self.ledger.quantity
@@ -209,6 +324,9 @@ class SpotExecution:
         if len(set(report.open_order_ids)) != len(report.open_order_ids):
             raise ValueError("duplicate Spot open order identity")
         active_orders = {self.entry_id, self._close_id}
+        active_orders.update(
+            v["intent"]["client_order_id"] for v in self.controls.disposals.values()
+        )
         for intent in self.protection_intents:
             if intent.entry_client_order_id == self.entry_id:
                 active_orders.update((intent.stop_client_order_id, intent.target_client_order_id))
@@ -232,9 +350,13 @@ class SpotExecution:
         self.quote_reserved = reserved
         self.last_revision = report.revision
         self.flat_confirmed = (
-            self.ledger.quantity == 0 and not report.open_order_ids and not self.pending
+            self.ledger.quantity == 0
+            and not report.open_order_ids
+            and not self.pending
+            and not report.unknown_request_ids
         )
         self._write("spot_reconciliation", asdict(report))
+        self.last_report = deepcopy(report)
         if self.flat_confirmed:
             self._complete_trade()
         return report
@@ -245,6 +367,8 @@ class SpotExecution:
             raise RuntimeError("Spot storage failed; restore a fresh engine")
         try:
             report = self._report()
+            if self.production and report.unknown_request_ids:
+                raise RuntimeError("Spot request outcome unknown; observation required")
             if self.pending:
                 raise RuntimeError("Spot entry pending; cancel/reconcile before resume")
             if self.ledger.quantity:
@@ -265,10 +389,15 @@ class SpotExecution:
     def poll(self):
         if self.persistence_failed:
             raise RuntimeError("Spot storage failed; restore a fresh engine")
+        if self.controls.terminal:
+            self.observe()
+            return
         try:
             self._consume(self.broker.poll_fills(self.session_id))
             report = self._report()
-            if self.pending and self.ledger.quantity:
+            if self.production and report.unknown_request_ids:
+                raise RuntimeError("Spot request outcome unknown; observation required")
+            if self.pending and (self.ledger.quantity or (self.production and self.halted)):
                 self.halted = True
                 for client_id in report.pending_entry_ids:
                     if client_id not in self.cancel_attempted:
@@ -276,6 +405,8 @@ class SpotExecution:
                         self.cancel_attempted.add(client_id)
                         self.broker.cancel_entry(self.identity.symbol, self.session_id, client_id)
                 report = self._report()
+                if self.production and report.unknown_request_ids:
+                    raise RuntimeError("Spot cancellation outcome unknown; observation required")
                 if self.pending:
                     raise RuntimeError("Spot entry remains pending after cancellation")
             if self.pending:
@@ -313,6 +444,7 @@ class SpotExecution:
     def _validate_protection(self, protection, open_order_ids):
         if not isinstance(protection, SpotProtection) or not self.protection_intents:
             raise RuntimeError("Spot linked protection unavailable")
+        self._validate_context(protection.context)
         intent = self.protection_intents[-1]
         if (
             intent.entry_client_order_id != self.entry_id
@@ -357,6 +489,8 @@ class SpotExecution:
             self.ledger.account.on_stop_update(float(stop))
 
     def _protect(self, report):
+        if self.production and report.unknown_request_ids:
+            raise RuntimeError("Spot request outcome unknown; observation required")
         if report.open_order_ids or self.entry_id is None:
             raise RuntimeError("cannot protect Spot inventory with unreconciled orders")
         entry = self.intents[self.entry_id]
@@ -365,27 +499,39 @@ class SpotExecution:
             self.session_id,
             self.entry_id,
             make_client_order_id(
-                self.session_id, f"spot-protection-{number}", SPOT_TESTNET, "stop"
+                self.session_id, f"spot-protection-{number}", self.id_namespace, "stop"
             ),
             make_client_order_id(
-                self.session_id, f"spot-protection-{number}", SPOT_TESTNET, "target"
+                self.session_id, f"spot-protection-{number}", self.id_namespace, "target"
             ),
             self.identity.symbol,
             "sell",
             str(self.ledger.quantity),
             entry.stop_price,
             entry.target_price,
-            SPOT_TESTNET,
+            self.identity.target,
             reduce_only=False,
+            metadata={
+                "spot_context": deepcopy(self.context),
+                "list_client_order_id": make_client_order_id(
+                    self.session_id, f"spot-protection-{number}", self.id_namespace, "list"
+                ),
+            }
+            if self.production
+            else {},
         )
         self._write("spot_protection_intent", asdict(intent))
         self.protection_intents.append(intent)
         try:
             ack = self.broker.place_spot_protection(intent)
+            self._validate_context(ack.context)
             self._write("spot_protection_ack", asdict(ack))
+            self.protection_acks.append(asdict(ack))
             self._validate_protection(ack, (ack.stop_client_order_id, ack.target_client_order_id))
             # Reconciliation may already contain executions newer than the receipt.
             report = self._report()
+            if self.production and report.unknown_request_ids:
+                raise RuntimeError("Spot protection outcome unknown; observation required")
             if self.flat_confirmed:
                 self.protection = None
                 return
@@ -404,13 +550,25 @@ class SpotExecution:
         self.ready = False
         if self.persistence_failed:
             raise RuntimeError("Spot storage failed; host reconciliation required")
+        if self.controls.terminal:
+            return
         try:
+            if self.production:
+                # Resolve unknown lists/requests by original identities before
+                # allowing any cancellation or SELL.
+                before = self._report()
+                if before.unknown_request_ids:
+                    raise RuntimeError("Spot request outcome unknown; closure unconfirmed")
             if not self.close_attempted:
                 self._write("spot_cancel_all", {"symbol": self.identity.symbol})
                 self.close_attempted = True
                 self.broker.cancel_all(self.identity.symbol, self.session_id)
             report = self._report()
-            if self.pending or report.open_order_ids:
+            if (
+                self.pending
+                or report.open_order_ids
+                or (self.production and report.unknown_request_ids)
+            ):
                 raise RuntimeError("Spot cancellation unconfirmed; closure unconfirmed")
             if self.flat_confirmed:
                 self.protection = None
@@ -421,7 +579,7 @@ class SpotExecution:
             if self._close_id is None:
                 close_name = f"spot-close-{len(self.intents)}"
                 client_id = make_client_order_id(
-                    self.session_id, close_name, SPOT_TESTNET, "flatten"
+                    self.session_id, close_name, self.id_namespace, "flatten"
                 )
                 intent = BrokerOrderIntent(
                     self.session_id,
@@ -431,8 +589,9 @@ class SpotExecution:
                     "sell",
                     "market",
                     str(self.ledger.quantity),
-                    SPOT_TESTNET,
+                    self.identity.target,
                     role="flatten",
+                    metadata={"spot_context": deepcopy(self.context)} if self.production else {},
                 )
                 self._write("order_intent", asdict(intent))
                 self.intents[client_id] = intent
@@ -500,7 +659,7 @@ class SpotExecution:
     def export_state(self):
         return deepcopy(
             {
-                "version": 1,
+                "version": 2 if self.production else 1,
                 "identity": asdict(self.identity),
                 "session_id": self.session_id,
                 "capital": str(self.ledger.capital),
@@ -517,13 +676,30 @@ class SpotExecution:
                 "close_id": self._close_id,
                 "closed_entries": sorted(self.closed_entries),
                 "cycle_baseline": self.cycle_baseline,
+                **(
+                    {
+                        "context": self.context,
+                        "halt_reason": self.halt_reason,
+                        "pending": self.pending,
+                        "protection": asdict(self.protection) if self.protection else None,
+                        "protection_acks": self.protection_acks,
+                        "order_acks": self.order_acks,
+                        "last_report": asdict(self.last_report) if self.last_report else None,
+                        "outside_bracket": self._outside_bracket,
+                        "observation_hash": self.observation_hash(),
+                        "disposal_attempts": self.controls.disposals,
+                        "terminal": self.controls.terminal,
+                    }
+                    if self.production
+                    else {}
+                ),
             }
         )
 
     def restore(self, state):
         """Restore durable facts only. A separate fresh reconcile is mandatory."""
         if (
-            state.get("version") != 1
+            state.get("version") != (2 if self.production else 1)
             or state.get("identity") != asdict(self.identity)
             or state.get("session_id") != self.session_id
             or state.get("binding") != self.binding
@@ -534,10 +710,26 @@ class SpotExecution:
             raise ValueError("Spot restore requires a fresh engine")
         self._halt()
         self.restored = True
+        if self.production:
+            self._validate_context(state["context"])
+            self.halt_reason = state["halt_reason"] or "restored instance"
+            self.pending = state["pending"]
+            self._outside_bracket = state["outside_bracket"]
+            self.order_acks = deepcopy(state["order_acks"])
+            self.protection_acks = deepcopy(state["protection_acks"])
+            self.controls.disposals = deepcopy(state["disposal_attempts"])
+            self.controls.terminal = deepcopy(state["terminal"])
+            if state["protection"]:
+                self.protection = SpotProtection(**state["protection"])
         self._close_id = state["close_id"]
         self.closed_entries = set(state["closed_entries"])
         self.cycle_baseline = deepcopy(state["cycle_baseline"])
         self.intents = {i["client_order_id"]: BrokerOrderIntent(**i) for i in state["intents"]}
+        if self.production:
+            for intent in self.intents.values():
+                self._validate_context(intent.metadata.get("spot_context"))
+                if intent.target != self.identity.target or intent.session_id != self.session_id:
+                    raise ValueError("Spot restore intent identity mismatch")
         self.protection_intents = [ProtectiveOrderIntent(**i) for i in state["protection_intents"]]
         self.entry_id = state["entry_id"]
         self.close_attempted = state["close_attempted"]
@@ -545,6 +737,7 @@ class SpotExecution:
         for event in state["events"]:
             value = {**event, "fees": tuple(SpotFee(**fee) for fee in event["fees"])}
             fill = SpotFill(**value)
+            self._validate_context(fill.metadata.get("spot_context"))
             if (
                 self._known_role(fill.client_order_id) != fill.role
                 or fill.session_id != self.session_id
@@ -552,5 +745,7 @@ class SpotExecution:
                 raise ValueError("Spot restore contains unattributed fill")
             stop = self.intents[fill.client_order_id].stop_price if fill.role == "entry" else "0"
             self.ledger.apply(fill, stop_price=stop)
+            if self.production and fill.status == "partial":
+                self.halted = True
         # Restart always halts additions. Reconciliation can recover protection;
         # only explicit flat resume can authorize new entries.

@@ -6,6 +6,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.12.8] - 2026-10-29
+
+### Added
+
+- Explicit transport-free Binance cash Spot production identity and versioned
+  capability declaration, with copied account/state and strict execution context.
+- Public entry halt, read-only observation, bounded supervision, separately
+  host-authorized residual disposal and immutable terminal custody controls.
+- Verified production archive restoration with permanent entry inhibition,
+  original IDs/receipts, exact fee accounting and unchanged Testnet defaults.
+  Built-in factory modes, sandbox transport restrictions and dependencies are unchanged.
+
+### Compatibility and limits
+
+- The engine protocol remains 2. The injected Spot Testnet contract remains v1;
+  production v2 requires explicit matching account, session, software and claim
+  bindings, durable host storage and separately verified host authority.
+- The production port supports one cash long-only, 1x MARKET entry and one fixed
+  linked stop/target bracket. It supplies no transport or credentials and does
+  not enable production through the built-in factory or CLI.
+- Offline conformance does not establish application/plugin adoption,
+  authenticated venue acceptance, host crash durability or trading permission.
+
 ## [0.12.7] - 2026-10-25
 
 ### Added
@@ -519,7 +542,8 @@ First public release.
 - The MIT/GPL boundary is enforced by a test rather than by convention: no file in this package may import Backtrader.
 - Releases are published to PyPI through Trusted Publishing (OIDC) with PEP 740 attestations. No long-lived PyPI credential is used in CI.
 
-[Unreleased]: https://github.com/koval-finance/koval-engine/compare/v0.12.7...HEAD
+[Unreleased]: https://github.com/koval-finance/koval-engine/compare/v0.12.8...HEAD
+[0.12.8]: https://github.com/koval-finance/koval-engine/compare/v0.12.7...v0.12.8
 [0.12.7]: https://github.com/koval-finance/koval-engine/compare/v0.12.6...v0.12.7
 [0.12.6]: https://github.com/koval-finance/koval-engine/compare/v0.12.5...v0.12.6
 [0.12.5]: https://github.com/koval-finance/koval-engine/compare/v0.12.4...v0.12.5

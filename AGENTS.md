@@ -8,8 +8,8 @@ Context for AI coding agents and their humans. Start here; depth lives in
 koval-engine is the MIT-licensed core of a trading-strategy platform: a
 typed dataflow strategy engine, a block library, exchange data adapters, and
 sandbox brokers. It is published on PyPI as `koval-engine`; the import
-package is `koval`. There is no real-money trading path, by design and by
-test.
+package is `koval`. Built-in brokers provide no production trading transport. Explicit host-owned
+Spot injection follows the contracts below.
 
 ## Non-negotiables
 
@@ -17,10 +17,12 @@ Tests pin most of these; [agents_docs/invariants.md](agents_docs/invariants.md)
 says exactly which, and marks the rest as the reviewer's job instead. All six
 carry the same weight regardless of which enforces them.
 
-- **No real-money code path.** The built-in factory allows only `paper` and
+- **No built-in production trading transport.** The built-in factory allows only `paper` and
   `binance_sandbox`. Explicit host-owned `binance_spot_testnet` injection is
   limited by [the Spot contract](agents_docs/spot_testnet_contract.md). Never
-  add a production target or widen a transport origin allowlist.
+  add production transport or widen a transport origin allowlist. The explicit
+  transport-free `binance_spot_live_internal` injection is governed by
+  [its production contract](agents_docs/spot_production_contract.md).
 - **MIT only.** No file imports `backtrader` or any package derived from it.
   Backtest engines are separate plugins found through the
   `koval.backtest_engines` entry-point group.

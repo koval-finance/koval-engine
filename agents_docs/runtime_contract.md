@@ -398,3 +398,9 @@ carried into the next bar. Direct broker callers must call
 Historical evidence is bounded. The host must stop at coverage exhaustion or
 implement an archived, replayable update lifecycle; static imports do not observe
 future funding/marks. No 99% realism or maximum 1% error claim is justified.
+
+## Explicit injected production Spot
+
+See [the production contract](spot_production_contract.md) for v2 identity,
+read-only observation, host-authorized controls and immutable terminal custody.
+This port adds no production transport or built-in factory mode.

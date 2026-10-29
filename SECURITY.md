@@ -29,7 +29,8 @@ This is a small project with best-effort maintenance. If you have not heard back
 
 ## The invariant we most want broken
 
-The engine claims to have **no code path that reaches a real-money trading endpoint**. Only `paper` and `binance_sandbox` are built-in factory execution modes. Explicitly injected `binance_spot_testnet` brokers must satisfy the [Spot contract](agents_docs/spot_testnet_contract.md); their transport and Testnet-only origin enforcement belong to the host. This package provides no Spot transport. The Binance broker accepts only its allowlisted futures-testnet origin, and WhiteBIT execution is disabled because no verified public sandbox exists.
+The engine claims to have **no built-in transport that reaches a production trading endpoint**. Only `paper` and `binance_sandbox` are built-in factory execution modes. Explicitly injected `binance_spot_testnet` brokers must satisfy the [Spot contract](agents_docs/spot_testnet_contract.md); their transport and Testnet-only origin enforcement belong to the host. Explicit host-owned `binance_spot_live_internal` injection follows the
+[production contract](agents_docs/spot_production_contract.md). This package provides no Spot transport. The Binance broker accepts only its allowlisted futures-testnet origin, and WhiteBIT execution is disabled because no verified public sandbox exists.
 
 The claim rests on three mechanisms:
 
@@ -39,7 +40,7 @@ The claim rests on three mechanisms:
 
 These are pinned by [`tests/safety/`](tests/safety/), which exists so a reader can check the guarantee rather than take it on faith.
 
-**A demonstration that those tests can pass while a real-money endpoint remains reachable is the highest-severity report this project accepts.** That includes reaching a production endpoint through configuration, environment variables, credential handling, URL normalisation, redirects, a supplied `session` object, or any path that bypasses the broker constructors entirely. Please report it privately.
+**A demonstration that those tests can pass while a production endpoint remains reachable through a built-in transport is the highest-severity report this project accepts.** That includes reaching a production endpoint through configuration, environment variables, credential handling, URL normalisation, redirects, a supplied `session` object, or any path that bypasses the broker constructors entirely. Please report it privately.
 
 ## Scope
 

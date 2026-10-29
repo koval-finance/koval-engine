@@ -119,7 +119,9 @@ collateral; unsupported margin modes fail before simulation.
   verified public sandbox, so execution is disabled; data stays read-only.
 - `src/koval/exchanges/sandbox_factory.py` — the only place execution modes
   are resolved. `paper` and `binance_sandbox` are the complete built-in factory list.
-  Explicit host-owned Spot Testnet injection uses [its separate contract](spot_testnet_contract.md).
+  Explicit host-owned Spot Testnet and production injection use
+  [the Testnet contract](spot_testnet_contract.md) and
+  [the production contract](spot_production_contract.md).
 
 `PollingFeed` runs its between-bar broker hook while waiting, backing off, and
 while the adapter request itself is blocked. Consecutive market-data failures
@@ -132,8 +134,8 @@ feed from emitting further buffered candles.
 
 ## What is not accepted
 
-Adding a real-money execution path or widening the transport origin allowlist
-is not accepted. The separate injected Spot Testnet contract provides no
+Adding a built-in production transport or widening the transport origin
+allowlist is not accepted. The separate explicit injected Spot contracts provide no
 transport and does not change the built-in factory allowlist. The invariant is pinned by
 [`tests/safety/test_no_real_money_path.py`](../tests/safety/test_no_real_money_path.py).
 

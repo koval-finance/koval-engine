@@ -6,7 +6,7 @@ pass.
 
 | Invariant | Pinned by |
 |---|---|
-| No code path reaches a real-money trading endpoint. Only `paper` and `binance_sandbox` are built-in factory modes; injected Spot Testnet follows its separate contract. WhiteBIT execution fails closed. | [`tests/safety/test_no_real_money_path.py`](../tests/safety/test_no_real_money_path.py) |
+| No built-in transport reaches a production trading endpoint. Only `paper` and `binance_sandbox` are built-in factory modes; injected Spot Testnet and explicit production follow their separate transport-free contracts. WhiteBIT execution fails closed. | [`tests/safety/test_no_real_money_path.py`](../tests/safety/test_no_real_money_path.py) |
 | No file imports `backtrader` or any package derived from it. The core stays MIT; backtest engines are separate plugins. | [`tests/test_license_boundary.py`](../tests/test_license_boundary.py) |
 | No maintainer-private path, planning document, or recorded exchange response is tracked by git. | [`tests/test_public_surface.py`](../tests/test_public_surface.py) |
 | No internal planning vocabulary appears in the published tree. | [`tests/test_public_language.py`](../tests/test_public_language.py) |

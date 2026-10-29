@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "koval-engine"
-version = "0.12.7"
-description = "Open engine for building and validating trading strategies: backtest, paper, and exchange-sandbox live. No real-money path."
+version = "0.12.8"
+description = "Open engine for building and validating trading strategies: backtest, paper, and sandbox execution and explicit host-owned Spot ports. No production transport."
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
